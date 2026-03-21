@@ -1,0 +1,68 @@
+[package]
+name = "loopauth"
+version = "0.1.0"
+edition = "2024"
+description = "OAuth 2.0 Authorization Code + PKCE flow for CLI applications"
+authors = ["Josh Clayton <joshua.clayton@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/joshuaclayton/loopauth"
+homepage = "https://github.com/joshuaclayton/loopauth"
+documentation = "https://docs.rs/loopauth"
+readme = "README.md"
+keywords = ["oauth2", "pkce", "cli", "authentication", "oidc"]
+categories = ["authentication", "web-programming"]
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
+rand = "0.10"
+reqwest = { version = "0.13", features = ["json", "form"] }
+rsa = { version = "0.9", features = ["pem"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+webbrowser = "1"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.test.package.num-bigint-dig]
+opt-level = 2
+
+[lints.clippy]
+pedantic = "deny"
+nursery = "deny"
+# Public API semver safety
+exhaustive_enums = "deny"
+exhaustive_structs = "deny"
+# No panics in library code
+panic = "deny"
+panic_in_result_fn = "deny"
+unwrap_in_result = "deny"
+get_unwrap = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+# No debug/print output from a library
+print_stdout = "deny"
+print_stderr = "deny"
+use_debug = "deny"
+dbg_macro = "deny"
+exit = "deny"
+# Error handling discipline
+map_err_ignore = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"     # can panic on non-ASCII boundaries
+# Meta: suppressions must explain themselves
+allow_attributes_without_reason = "deny"
+# Style consistency worth enforcing
+partial_pub_fields = "deny"
+unseparated_literal_suffix = "deny"
+missing_assert_message = "deny"

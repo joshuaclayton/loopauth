@@ -1,0 +1,6 @@
+/target
+/tmp/*
+.planning/
+.claude/
+.env
+CLAUDE.md

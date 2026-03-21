@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Authentication successful</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inconsolata:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --font-mono: "Inconsolata", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+      --color-app-bg: theme(colors.slate.100);
+      --color-app-border: theme(colors.slate.200);
+      --color-modal-bg: theme(colors.white);
+      --color-app-text-header: theme(colors.slate.900);
+      --color-base-content: theme(colors.slate.600);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --color-app-bg: theme(colors.slate.800);
+        --color-app-border: theme(colors.slate.600);
+        --color-modal-bg: theme(colors.slate.900);
+        --color-app-text-header: theme(colors.slate.200);
+        --color-base-content: theme(colors.slate.400);
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-app-bg flex items-center justify-center p-8 font-sans">
+  <div class="w-full max-w-lg lg:max-w-xl xl:max-w-2xl">
+    <div class="bg-modal-bg rounded-lg shadow dark:shadow-lg dark:shadow-green-400/20 border border-app-border overflow-hidden flex">
+      <div class="w-1.5 shrink-0 bg-green-600"></div>
+      <div class="p-8 flex-1">
+        <h1 class="text-2xl lg:text-3xl xl:text-4xl font-semibold tracking-tight text-app-text-header mb-1">Authentication successful</h1>
+        <p class="text-base lg:text-lg text-base-content mb-6">You can close this tab.</p>
+        <div class="text-base-content">{{CONTENT}}</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

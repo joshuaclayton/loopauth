@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+  # RUSTSEC-2023-0071: Marvin Attack timing side-channel in the rsa crate.
+  # The rsa crate is only used in test_support.rs for generating RSA key pairs
+  # in tests. The vulnerability requires an attacker to send crafted ciphertexts
+  # to a live system and measure decryption timing; this use-case is not exposed
+  # to that threat model.
+  "RUSTSEC-2023-0071",
+]
