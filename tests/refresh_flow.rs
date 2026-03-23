@@ -11,7 +11,6 @@ fn make_auth(server: &FakeOAuthServer) -> CliTokenClient {
         .auth_url(server.auth_url())
         .token_url(server.token_url())
         .build()
-        .unwrap()
 }
 
 #[tokio::test]

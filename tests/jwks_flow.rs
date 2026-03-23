@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use axum::{Json, Router, routing::get};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use loopauth::{
-    AuthError, CliTokenClient, JwksValidationError, JwksValidator, OAuth2Scope,
-    RemoteJwksValidator, test_support::FakeOAuthServer,
+    AuthError, CliTokenClient, JwksValidationError, JwksValidator, RemoteJwksValidator,
+    test_support::FakeOAuthServer,
 };
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use rsa::traits::PublicKeyParts;
@@ -97,14 +97,13 @@ async fn jwks_validator_passing_returns_ok() {
         .client_id("test-client")
         .auth_url(fake.auth_url())
         .token_url(fake.token_url())
-        .scopes(vec![OAuth2Scope::OpenId])
+        .with_openid_scope()
         .open_browser(false)
         .jwks_validator(Box::new(AlwaysPass))
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth.run_authorization_flow().await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -160,14 +159,13 @@ async fn jwks_validator_rejecting_returns_jwks_validation_failed() {
         .client_id("test-client")
         .auth_url(fake.auth_url())
         .token_url(fake.token_url())
-        .scopes(vec![OAuth2Scope::OpenId])
+        .with_openid_scope()
         .open_browser(false)
         .jwks_validator(Box::new(AlwaysReject))
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth.run_authorization_flow().await;
     match result {

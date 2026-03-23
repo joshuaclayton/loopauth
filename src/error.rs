@@ -4,9 +4,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum AuthError {
-    /// A required configuration field was missing or invalid.
-    #[error("configuration error: {0}")]
-    Config(#[from] ConfigError),
     /// The loopback callback server failed to bind.
     #[error("failed to bind loopback server: {0}")]
     ServerBind(#[source] std::io::Error),
@@ -97,24 +94,6 @@ pub enum IdTokenError {
     NoIdToken,
 }
 
-/// Errors that can occur when building a [`crate::CliTokenClient`] via [`crate::CliTokenClientBuilder::build`].
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum ConfigError {
-    /// A required builder field was not set.
-    #[error("missing required field: {0}")]
-    MissingField(String),
-    /// A URL field could not be parsed.
-    #[error("invalid URL for {field}: {source}")]
-    InvalidUrl {
-        /// Name of the field whose value was invalid (e.g. `"auth_url"`).
-        field: String,
-        #[source]
-        /// Underlying URL parse error.
-        source: url::ParseError,
-    },
-}
-
 /// Errors that can occur in [`crate::TokenStore`] implementations.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -129,7 +108,7 @@ pub enum TokenStoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthError, CallbackError, ConfigError, RefreshError, TokenStoreError};
+    use super::{AuthError, CallbackError, RefreshError, TokenStoreError};
 
     #[test]
     fn auth_error_state_mismatch_message() {
@@ -159,21 +138,6 @@ mod tests {
     }
 
     #[test]
-    fn config_error_missing_field_contains_field_name() {
-        let err = ConfigError::MissingField("client_id".to_string());
-        assert!(err.to_string().contains("client_id"));
-    }
-
-    #[test]
-    fn config_error_invalid_url_contains_field_name() {
-        let err = ConfigError::InvalidUrl {
-            field: "auth_url".to_string(),
-            source: url::Url::parse("not-a-url").unwrap_err(),
-        };
-        assert!(err.to_string().contains("auth_url"));
-    }
-
-    #[test]
     fn refresh_error_no_refresh_token_message() {
         assert_eq!(
             RefreshError::NoRefreshToken.to_string(),
@@ -185,11 +149,5 @@ mod tests {
     fn token_store_error_serialization_contains_message() {
         let err = TokenStoreError::Serialization("bad json".to_string());
         assert!(err.to_string().contains("bad json"));
-    }
-
-    #[test]
-    fn auth_error_from_config_error_via_from() {
-        let config_err = ConfigError::MissingField("x".to_string());
-        let _auth_err: AuthError = AuthError::from(config_err);
     }
 }

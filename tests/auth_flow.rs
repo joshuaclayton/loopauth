@@ -56,8 +56,7 @@ async fn full_round_trip_returns_token_set() {
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth.run_authorization_flow().await;
     assert!(result.is_ok(), "expected Ok, got {result:?}");
@@ -71,15 +70,14 @@ async fn state_mismatch_returns_err() {
 
     let cli_auth = CliTokenClient::builder()
         .client_id("test-client")
-        .auth_url("http://127.0.0.1:1/authorize") // won't be called
-        .token_url("http://127.0.0.1:1/token") // won't be called
+        .auth_url(url::Url::parse("http://127.0.0.1:1/authorize").unwrap()) // won't be called
+        .token_url(url::Url::parse("http://127.0.0.1:1/token").unwrap()) // won't be called
         .open_browser(false)
         .on_server_ready(move |p| {
             let mut guard = port_clone.lock().unwrap();
             *guard = Some(p);
         })
-        .build()
-        .unwrap();
+        .build();
 
     let auth_handle = tokio::spawn(async move { cli_auth.run_authorization_flow().await });
 
@@ -110,12 +108,11 @@ async fn state_mismatch_returns_err() {
 async fn timeout_returns_err() {
     let cli_auth = CliTokenClient::builder()
         .client_id("test-client")
-        .auth_url("http://127.0.0.1:1/authorize") // won't be called
-        .token_url("http://127.0.0.1:1/token")
+        .auth_url(url::Url::parse("http://127.0.0.1:1/authorize").unwrap()) // won't be called
+        .token_url(url::Url::parse("http://127.0.0.1:1/token").unwrap())
         .open_browser(false)
         .timeout(std::time::Duration::from_millis(100))
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth.run_authorization_flow().await;
     match result {
@@ -131,15 +128,14 @@ async fn provider_error_in_callback_returns_err() {
 
     let cli_auth = CliTokenClient::builder()
         .client_id("test-client")
-        .auth_url("http://127.0.0.1:1/authorize") // won't be called
-        .token_url("http://127.0.0.1:1/token")
+        .auth_url(url::Url::parse("http://127.0.0.1:1/authorize").unwrap()) // won't be called
+        .token_url(url::Url::parse("http://127.0.0.1:1/token").unwrap())
         .open_browser(false)
         .on_server_ready(move |p| {
             let mut guard = port_clone.lock().unwrap();
             *guard = Some(p);
         })
-        .build()
-        .unwrap();
+        .build();
 
     let auth_handle = tokio::spawn(async move { cli_auth.run_authorization_flow().await });
 
@@ -197,8 +193,7 @@ async fn non_2xx_token_response_returns_token_exchange_err() {
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth.run_authorization_flow().await;
     match result {
@@ -239,8 +234,7 @@ async fn code_verifier_sent_in_token_exchange() {
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth.run_authorization_flow().await;
     assert!(

@@ -24,13 +24,13 @@ async fn oidc_round_trip_with_openid_scope_populates_claims() {
         .client_id("test-client")
         .auth_url(fake.auth_url())
         .token_url(fake.token_url())
-        .scopes(vec![OAuth2Scope::OpenId, OAuth2Scope::Email])
+        .with_openid_scope()
+        .extend_scopes([OAuth2Scope::Email])
         .open_browser(false)
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth
         .run_authorization_flow()
@@ -74,8 +74,7 @@ async fn no_openid_scope_oidc_is_none() {
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .unwrap();
+        .build();
 
     let result = cli_auth
         .run_authorization_flow()

@@ -26,10 +26,11 @@ let open_id_configuration = OpenIdConfiguration::fetch(
     Url::parse("https://provider.example.com")?,
 ).await?;
 
+// from_open_id_configuration automatically includes the openid scope
 let client = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
     .client_id("my-client-id")
-    .scopes([OAuth2Scope::OpenId, OAuth2Scope::Email])
-    .build()?;
+    .extend_scopes([OAuth2Scope::Email])
+    .build();
 
 let tokens = client.run_authorization_flow().await?;
 ```
@@ -38,13 +39,15 @@ let tokens = client.run_authorization_flow().await?;
 
 ```rust
 use loopauth::{CliTokenClient, OAuth2Scope};
+use url::Url;
 
 let client = CliTokenClient::builder()
     .client_id("my-client-id")
-    .auth_url("https://provider.example.com/authorize")
-    .token_url("https://provider.example.com/token")
-    .scopes([OAuth2Scope::OpenId, OAuth2Scope::Email])
-    .build()?;
+    .auth_url(Url::parse("https://provider.example.com/authorize")?)
+    .token_url(Url::parse("https://provider.example.com/token")?)
+    .with_openid_scope()
+    .extend_scopes([OAuth2Scope::Email])
+    .build();
 
 let tokens = client.run_authorization_flow().await?;
 ```

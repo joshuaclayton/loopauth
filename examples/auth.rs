@@ -69,8 +69,10 @@ async fn main() {
         .init();
 
     let client_id = require_env("LOOPAUTH_CLIENT_ID");
-    let auth_url = require_env("LOOPAUTH_AUTH_URL");
-    let token_url = require_env("LOOPAUTH_TOKEN_URL");
+    let auth_url = url::Url::parse(&require_env("LOOPAUTH_AUTH_URL"))
+        .expect("LOOPAUTH_AUTH_URL must be a valid URL");
+    let token_url = url::Url::parse(&require_env("LOOPAUTH_TOKEN_URL"))
+        .expect("LOOPAUTH_TOKEN_URL must be a valid URL");
 
     let client_secret = std::env::var("LOOPAUTH_CLIENT_SECRET").ok();
     let scopes = parse_scopes(
@@ -84,7 +86,7 @@ async fn main() {
         .client_id(client_id)
         .auth_url(auth_url)
         .token_url(token_url)
-        .scopes(scopes)
+        .extend_scopes(scopes)
         .on_url(|url| {
             tracing::info!("opening: {url}");
             tracing::info!("waiting for browser callback... (Ctrl+C to cancel)");
@@ -97,10 +99,7 @@ async fn main() {
         builder = builder.port_hint(port);
     }
 
-    let auth = builder.build().unwrap_or_else(|e| {
-        tracing::error!("configuration error: {e}");
-        std::process::exit(FAILURE_EXIT_CODE);
-    });
+    let auth = builder.build();
 
     tracing::info!("starting authorization flow");
 

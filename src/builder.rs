@@ -1,4 +1,4 @@
-use crate::error::{AuthError, CallbackError, ConfigError, RefreshError};
+use crate::error::{AuthError, CallbackError, RefreshError};
 use crate::jwks::{JwksValidator, JwksValidatorStorage, RemoteJwksValidator};
 use crate::oidc::OpenIdConfiguration;
 use crate::pages::{
@@ -94,8 +94,7 @@ impl CliTokenClient {
     ///             let _ = tx.send(url.clone());
     ///         }
     ///     })
-    ///     .build()
-    ///     .unwrap();
+    ///     .build();
     ///
     /// // Spawn a task to fire the redirect (simulates the browser callback)
     /// tokio::spawn(async move {
@@ -227,8 +226,7 @@ impl CliTokenClient {
     ///     .client_id("test-client")
     ///     .auth_url(server.auth_url())
     ///     .token_url(server.token_url())
-    ///     .build()
-    ///     .unwrap();
+    ///     .build();
     ///
     /// let tokens = client.refresh("rt_value").await.unwrap();
     /// assert_eq!(tokens.access_token().as_str(), "new_token");
@@ -278,8 +276,7 @@ impl CliTokenClient {
     ///     .client_id("test-client")
     ///     .auth_url(server.auth_url())
     ///     .token_url(server.token_url())
-    ///     .build()
-    ///     .unwrap();
+    ///     .build();
     ///
     /// // Build an already-expired TokenSet so the refresh branch is taken
     /// let tokens: loopauth::TokenSet = serde_json::from_value(serde_json::json!({
@@ -657,19 +654,112 @@ async fn exchange_refresh_token(
     ))
 }
 
+// ── Type-state markers ────────────────────────────────────────────────────────
+//
+// `CliTokenClientBuilder` carries four type parameters that track required
+// configuration at compile time. `build()` is only reachable once all required
+// fields are in their `Has*` state, turning omitted-field bugs into compile
+// errors rather than runtime panics.
+//
+// Three parameters track the individually-required fields:
+//   C — client_id   (NoClientId | HasClientId)
+//   A — auth_url    (NoAuthUrl  | HasAuthUrl)
+//   T — token_url   (NoTokenUrl | HasTokenUrl)
+//
+// One parameter tracks OIDC mode:
+//   O — oidc        (NoOidc | HasOidc)
+//
+// OIDC mode is entered explicitly via `with_openid_scope()`, or implicitly by
+// `from_open_id_configuration()`. JWKS validator methods are only available in
+// `HasOidc` state, eliminating the "jwks_validator requires OpenId scope" and
+// "from_open_id_configuration requires OpenId scope" runtime checks entirely.
+
+/// Type-state: `client_id` not yet provided.
+#[non_exhaustive]
+pub struct NoClientId;
+/// Type-state: `client_id` has been provided.
+#[non_exhaustive]
+pub struct HasClientId(ClientId);
+/// Type-state: `auth_url` not yet provided.
+#[non_exhaustive]
+pub struct NoAuthUrl;
+/// Type-state: `auth_url` has been provided.
+#[non_exhaustive]
+pub struct HasAuthUrl(url::Url);
+/// Type-state: `token_url` not yet provided.
+#[non_exhaustive]
+pub struct NoTokenUrl;
+/// Type-state: `token_url` has been provided.
+#[non_exhaustive]
+pub struct HasTokenUrl(url::Url);
+/// Type-state: OIDC mode not yet engaged; `openid` scope is not included.
+#[non_exhaustive]
+pub struct NoOidc;
+/// Type-state: OIDC mode engaged; `openid` scope is included and JWKS validator
+/// methods are available.
+#[non_exhaustive]
+pub struct HasOidc;
+
+// All optional builder fields live in a private inner struct. This means the
+// state-transition methods (`client_id`, `auth_url`, `token_url`,
+// `with_openid_scope`) only need to forward one `config` field when
+// reconstructing the builder with a new type, rather than copying every
+// individual optional field.
+struct BuilderConfig {
+    client_secret: Option<String>,
+    scopes: std::collections::BTreeSet<OAuth2Scope>,
+    port_config: PortConfig,
+    success_html: Option<String>,
+    error_html: Option<String>,
+    success_renderer: Option<SuccessRendererStorage>,
+    error_renderer: Option<ErrorRendererStorage>,
+    open_browser: bool,
+    timeout: std::time::Duration,
+    on_auth_url: Option<OnAuthUrlCallback>,
+    on_url: Option<OnUrlCallback>,
+    on_server_ready: Option<OnServerReadyCallback>,
+    jwks_validator: Option<JwksValidatorStorage>,
+}
+
+impl Default for BuilderConfig {
+    fn default() -> Self {
+        Self {
+            client_secret: None,
+            scopes: std::collections::BTreeSet::new(),
+            port_config: PortConfig::Random,
+            success_html: None,
+            error_html: None,
+            success_renderer: None,
+            error_renderer: None,
+            open_browser: true,
+            timeout: std::time::Duration::from_secs(TIMEOUT_DURATION_IN_SECONDS),
+            on_auth_url: None,
+            on_url: None,
+            on_server_ready: None,
+            jwks_validator: None,
+        }
+    }
+}
+
 /// Builder for [`CliTokenClient`].
 ///
-/// Obtain via [`CliTokenClient::builder`]. The three fields `client_id`, `auth_url`,
-/// and `token_url` are required - [`CliTokenClientBuilder::build`] returns a
-/// [`ConfigError`] if any are absent or not valid URLs. All other fields are
-/// optional with the defaults described below.
+/// Obtain via [`CliTokenClient::builder`]. The three required fields `client_id`,
+/// `auth_url`, and `token_url` are tracked at the type level — [`build`] is only
+/// callable once all three have been set, so omitting any of them is a **compile
+/// error**. OIDC mode is tracked separately: JWKS validator methods are only
+/// available after calling [`with_openid_scope`] or using
+/// [`from_open_id_configuration`].
+///
+/// [`build`]: CliTokenClientBuilder::build
+/// [`with_openid_scope`]: CliTokenClientBuilder::with_openid_scope
+/// [`from_open_id_configuration`]: CliTokenClientBuilder::from_open_id_configuration
 ///
 /// # Defaults
 ///
 /// | Field | Default |
 /// |-------|---------|
 /// | `client_secret` | `None` (public client - PKCE only) |
-/// | `scopes` | empty |
+/// | `scopes` | empty (plus `openid` when OIDC mode is engaged) |
 /// | `port` | OS assigns port (use `port_hint` for soft preference, `require_port` for hard requirement) |
 /// | `open_browser` | `true` |
 /// | `timeout` | 5 minutes |
@@ -692,118 +782,125 @@ async fn exchange_refresh_token(
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = CliTokenClient::builder()
 ///     .client_id("my-client-id")
-///     .auth_url("https://provider.example.com/authorize")
-///     .token_url("https://provider.example.com/token")
-///     .scopes([OAuth2Scope::OpenId, OAuth2Scope::Email, OAuth2Scope::OfflineAccess])
+///     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
+///     .token_url(url::Url::parse("https://provider.example.com/token")?)
+///     .with_openid_scope()
+///     .extend_scopes([OAuth2Scope::Email, OAuth2Scope::OfflineAccess])
 ///     .on_auth_url(|url| {
 ///         url.query_pairs_mut().append_pair("access_type", "offline");
 ///     })
-///     .build()?;
+///     .build();
 ///
 /// let tokens = client.run_authorization_flow().await?;
 /// println!("access token: {}", tokens.access_token());
 /// # Ok(())
 /// # }
 /// ```
-pub struct CliTokenClientBuilder {
-    client_id: Option<ClientId>,
-    client_secret: Option<String>,
-    auth_url: Option<String>,
-    token_url: Option<String>,
-    scopes: Vec<OAuth2Scope>,
-    port_config: PortConfig,
-    success_html: Option<String>,
-    error_html: Option<String>,
-    success_renderer: Option<SuccessRendererStorage>,
-    error_renderer: Option<ErrorRendererStorage>,
-    open_browser: bool,
-    timeout: std::time::Duration,
-    on_auth_url: Option<OnAuthUrlCallback>,
-    on_url: Option<OnUrlCallback>,
-    on_server_ready: Option<OnServerReadyCallback>,
-    jwks_validator: Option<JwksValidatorStorage>,
-    from_open_id_configuration_used: bool,
+pub struct CliTokenClientBuilder<C = NoClientId, A = NoAuthUrl, T = NoTokenUrl, O = NoOidc> {
+    client_id: C,
+    auth_url: A,
+    token_url: T,
+    _oidc: std::marker::PhantomData<O>,
+    config: BuilderConfig,
 }
 
 impl Default for CliTokenClientBuilder {
     fn default() -> Self {
         Self {
-            client_id: None,
-            client_secret: None,
-            auth_url: None,
-            token_url: None,
-            scopes: Vec::new(),
-            port_config: PortConfig::Random,
-            success_html: None,
-            error_html: None,
-            success_renderer: None,
-            error_renderer: None,
-            open_browser: true,
-            timeout: std::time::Duration::from_secs(TIMEOUT_DURATION_IN_SECONDS),
-            on_auth_url: None,
-            on_url: None,
-            on_server_ready: None,
-            jwks_validator: None,
-            from_open_id_configuration_used: false,
+            client_id: NoClientId,
+            auth_url: NoAuthUrl,
+            token_url: NoTokenUrl,
+            _oidc: std::marker::PhantomData,
+            config: BuilderConfig::default(),
         }
     }
 }
 
+// Named constructor — pre-fills both URLs from an OIDC discovery document and
+// enters HasOidc mode (adding `openid` to scopes). Placed on the default
+// (all-unset) state so `CliTokenClientBuilder::from_open_id_configuration`
+// remains the natural call site.
 impl CliTokenClientBuilder {
     /// Create a builder pre-filled from an [`OpenIdConfiguration`].
     ///
-    /// Sets `auth_url` from `open_id_configuration.authorization_endpoint()` and `token_url` from
-    /// `open_id_configuration.token_endpoint()`. [`CliTokenClientBuilder::build`] will require
-    /// [`OAuth2Scope::OpenId`] in scopes when this constructor is used.
+    /// Sets `auth_url` and `token_url` from the discovery document and
+    /// automatically enters OIDC mode (equivalent to calling
+    /// [`with_openid_scope`]). Callers must still call `.client_id()` before
+    /// `.build()`.
     ///
-    /// Callers must still call `.client_id()` before `.build()`.
+    /// [`with_openid_scope`]: CliTokenClientBuilder::with_openid_scope
     #[must_use]
-    pub fn from_open_id_configuration(open_id_configuration: &OpenIdConfiguration) -> Self {
-        Self {
-            auth_url: Some(
-                open_id_configuration
-                    .authorization_endpoint()
-                    .as_str()
-                    .to_owned(),
-            ),
-            token_url: Some(open_id_configuration.token_endpoint().as_str().to_owned()),
-            from_open_id_configuration_used: true,
-            ..Self::default()
+    pub fn from_open_id_configuration(
+        open_id_configuration: &OpenIdConfiguration,
+    ) -> CliTokenClientBuilder<NoClientId, HasAuthUrl, HasTokenUrl, HasOidc> {
+        CliTokenClientBuilder {
+            client_id: NoClientId,
+            auth_url: HasAuthUrl(open_id_configuration.authorization_endpoint().clone()),
+            token_url: HasTokenUrl(open_id_configuration.token_endpoint().clone()),
+            _oidc: std::marker::PhantomData,
+            config: BuilderConfig {
+                scopes: std::collections::BTreeSet::from([OAuth2Scope::OpenId]),
+                ..BuilderConfig::default()
+            },
+        }
+    }
+}
+
+// ── Setters available in any state ───────────────────────────────────────────
+
+impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
+    /// Set the OAuth 2.0 client ID. Required.
+    #[must_use]
+    pub fn client_id(self, v: impl Into<String>) -> CliTokenClientBuilder<HasClientId, A, T, O> {
+        CliTokenClientBuilder {
+            client_id: HasClientId(ClientId(v.into())),
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            _oidc: std::marker::PhantomData,
+            config: self.config,
         }
     }
 
-    /// Set the OAuth 2.0 client ID. Required.
+    /// Set the authorization endpoint URL. Required.
     #[must_use]
-    pub fn client_id(mut self, v: impl Into<String>) -> Self {
-        self.client_id = Some(ClientId(v.into()));
-        self
+    pub fn auth_url(self, v: url::Url) -> CliTokenClientBuilder<C, HasAuthUrl, T, O> {
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: HasAuthUrl(v),
+            token_url: self.token_url,
+            _oidc: std::marker::PhantomData,
+            config: self.config,
+        }
+    }
+
+    /// Set the token endpoint URL. Required.
+    #[must_use]
+    pub fn token_url(self, v: url::Url) -> CliTokenClientBuilder<C, A, HasTokenUrl, O> {
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: HasTokenUrl(v),
+            _oidc: std::marker::PhantomData,
+            config: self.config,
+        }
     }
 
     /// Set the client secret. Optional - omit for public clients using PKCE only.
     #[must_use]
     pub fn client_secret(mut self, v: impl Into<String>) -> Self {
-        self.client_secret = Some(v.into());
+        self.config.client_secret = Some(v.into());
         self
     }
 
-    /// Set the authorization endpoint URL. Required.
+    /// Extend the set of OAuth 2.0 scopes to request.
+    ///
+    /// To include the `openid` scope and enable OIDC features, use
+    /// [`with_openid_scope`] instead — it also unlocks JWKS validator methods.
+    ///
+    /// [`with_openid_scope`]: CliTokenClientBuilder::with_openid_scope
     #[must_use]
-    pub fn auth_url(mut self, v: impl Into<String>) -> Self {
-        self.auth_url = Some(v.into());
-        self
-    }
-
-    /// Set the token endpoint URL. Required.
-    #[must_use]
-    pub fn token_url(mut self, v: impl Into<String>) -> Self {
-        self.token_url = Some(v.into());
-        self
-    }
-
-    /// Set the OAuth 2.0 scopes to request. Include [`OAuth2Scope::OpenId`] to enable OIDC claim decoding.
-    #[must_use]
-    pub fn scopes(mut self, v: impl IntoIterator<Item = OAuth2Scope>) -> Self {
-        self.scopes = v.into_iter().collect();
+    pub fn extend_scopes(mut self, v: impl IntoIterator<Item = OAuth2Scope>) -> Self {
+        self.config.scopes.extend(v);
         self
     }
 
@@ -813,7 +910,7 @@ impl CliTokenClientBuilder {
     /// Use [`CliTokenClientBuilder::require_port`] for hard-failure semantics.
     #[must_use]
     pub const fn port_hint(mut self, v: u16) -> Self {
-        self.port_config = PortConfig::Hint(v);
+        self.config.port_config = PortConfig::Hint(v);
         self
     }
 
@@ -830,29 +927,29 @@ impl CliTokenClientBuilder {
     ///
     /// let builder = CliTokenClient::builder()
     ///     .client_id("my-client")
-    ///     .auth_url("https://provider.example.com/authorize")
-    ///     .token_url("https://provider.example.com/token")
+    ///     .auth_url(url::Url::parse("https://provider.example.com/authorize").unwrap())
+    ///     .token_url(url::Url::parse("https://provider.example.com/token").unwrap())
     ///     .require_port(8080);
     /// // If port 8080 is unavailable when run_authorization_flow() is called,
     /// // it returns Err(AuthError::ServerBind(...)) immediately.
     /// ```
     #[must_use]
     pub const fn require_port(mut self, v: u16) -> Self {
-        self.port_config = PortConfig::Required(v);
+        self.config.port_config = PortConfig::Required(v);
         self
     }
 
     /// Override the default success page with custom HTML, shown after a successful callback.
     #[must_use]
     pub fn success_html(mut self, v: impl Into<String>) -> Self {
-        self.success_html = Some(v.into());
+        self.config.success_html = Some(v.into());
         self
     }
 
     /// Override the default error page with custom HTML, shown when the callback contains an error.
     #[must_use]
     pub fn error_html(mut self, v: impl Into<String>) -> Self {
-        self.error_html = Some(v.into());
+        self.config.error_html = Some(v.into());
         self
     }
 
@@ -861,7 +958,7 @@ impl CliTokenClientBuilder {
     /// Takes precedence over [`CliTokenClientBuilder::success_html`].
     #[must_use]
     pub fn success_renderer(mut self, r: impl SuccessPageRenderer + 'static) -> Self {
-        self.success_renderer = Some(Box::new(r));
+        self.config.success_renderer = Some(Box::new(r));
         self
     }
 
@@ -870,7 +967,7 @@ impl CliTokenClientBuilder {
     /// Takes precedence over [`CliTokenClientBuilder::error_html`].
     #[must_use]
     pub fn error_renderer(mut self, r: impl ErrorPageRenderer + 'static) -> Self {
-        self.error_renderer = Some(Box::new(r));
+        self.config.error_renderer = Some(Box::new(r));
         self
     }
 
@@ -880,7 +977,7 @@ impl CliTokenClientBuilder {
     /// testing or headless environments.
     #[must_use]
     pub const fn open_browser(mut self, v: bool) -> Self {
-        self.open_browser = v;
+        self.config.open_browser = v;
         self
     }
 
@@ -889,7 +986,7 @@ impl CliTokenClientBuilder {
     /// Returns [`AuthError::Timeout`] if the deadline is exceeded.
     #[must_use]
     pub const fn timeout(mut self, v: std::time::Duration) -> Self {
-        self.timeout = v;
+        self.config.timeout = v;
         self
     }
 
@@ -898,7 +995,7 @@ impl CliTokenClientBuilder {
     /// `access_type=offline` for Google). Called after PKCE and state parameters are set.
     #[must_use]
     pub fn on_auth_url(mut self, f: impl Fn(&mut url::Url) + Send + Sync + 'static) -> Self {
-        self.on_auth_url = Some(Box::new(f));
+        self.config.on_auth_url = Some(Box::new(f));
         self
     }
 
@@ -907,7 +1004,7 @@ impl CliTokenClientBuilder {
     /// the URL is logged. Primary mechanism for headless/CI environments and test harnesses.
     #[must_use]
     pub fn on_url(mut self, f: impl Fn(&url::Url) + Send + Sync + 'static) -> Self {
-        self.on_url = Some(Box::new(f));
+        self.config.on_url = Some(Box::new(f));
         self
     }
 
@@ -916,122 +1013,141 @@ impl CliTokenClientBuilder {
     /// flow) and custom tooling that needs to know the redirect URI port in advance.
     #[must_use]
     pub fn on_server_ready(mut self, f: impl Fn(u16) + Send + Sync + 'static) -> Self {
-        self.on_server_ready = Some(Box::new(f));
+        self.config.on_server_ready = Some(Box::new(f));
         self
     }
+}
 
+// ── OIDC mode transition ──────────────────────────────────────────────────────
+
+impl<C, A, T> CliTokenClientBuilder<C, A, T, NoOidc> {
+    /// Add `openid` to the requested scopes and enter OIDC mode.
+    ///
+    /// Once in OIDC mode, JWKS validator methods become available and the
+    /// `openid` scope is guaranteed to be included in the token request.
+    ///
+    /// Note: [`from_open_id_configuration`] implicitly enters OIDC mode, so
+    /// this method is not needed when using that constructor.
+    ///
+    /// [`from_open_id_configuration`]: CliTokenClientBuilder::from_open_id_configuration
+    #[must_use]
+    pub fn with_openid_scope(mut self) -> CliTokenClientBuilder<C, A, T, HasOidc> {
+        self.config.scopes.insert(OAuth2Scope::OpenId);
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            _oidc: std::marker::PhantomData,
+            config: self.config,
+        }
+    }
+}
+
+// ── OIDC-only methods ─────────────────────────────────────────────────────────
+
+impl<C, A, T> CliTokenClientBuilder<C, A, T, HasOidc> {
     /// Register an optional JWKS validator callback. When set, the raw `id_token`
     /// string is passed to [`JwksValidator::validate`] after a successful token
     /// exchange. If validation fails, [`CliTokenClient::run_authorization_flow`]
     /// returns [`AuthError::IdToken`] wrapping an [`crate::IdTokenError::JwksValidationFailed`].
-    ///
-    /// Requires [`OAuth2Scope::OpenId`] to be in the configured scopes -
-    /// [`CliTokenClientBuilder::build`] returns [`ConfigError::MissingField`]
-    /// if the scope is absent.
     #[must_use]
     pub fn jwks_validator(mut self, v: Box<dyn JwksValidator>) -> Self {
-        self.jwks_validator = Some(v);
+        self.config.jwks_validator = Some(v);
         self
     }
+}
 
+impl<A, T> CliTokenClientBuilder<HasClientId, A, T, HasOidc> {
     /// Set the JWKS validator from an [`OpenIdConfiguration`].
     ///
-    /// Uses `open_id_configuration.jwks_uri()` and the `client_id` already set on this builder.
-    /// Call `.client_id()` before this method to ensure the audience is set correctly.
-    /// If called before `.client_id()`, the validator uses an empty string as the audience.
+    /// Uses `open_id_configuration.jwks_uri()` and the `client_id` already set
+    /// on this builder as the expected audience. Requires both `client_id` and
+    /// OIDC mode to be set first — enforced at compile time.
     #[must_use]
     pub fn with_open_id_configuration_jwks_validator(
         mut self,
         open_id_configuration: &OpenIdConfiguration,
     ) -> Self {
-        let client_id = self
-            .client_id
-            .as_ref()
-            .map(|c| c.as_str().to_owned())
-            .unwrap_or_default();
-        self.jwks_validator = Some(Box::new(RemoteJwksValidator::from_open_id_configuration(
-            open_id_configuration,
-            client_id,
-        )));
+        let client_id = self.client_id.0.as_str().to_owned();
+        self.config.jwks_validator = Some(Box::new(
+            RemoteJwksValidator::from_open_id_configuration(open_id_configuration, client_id),
+        ));
         self
     }
+}
 
-    /// Build a [`CliTokenClient`] instance from the configured builder.
+impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, HasOidc> {
+    /// Build a [`CliTokenClient`] from the configured builder.
     ///
-    /// # Errors
+    /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
+    /// at compile time. This method is infallible. The `openid` scope is
+    /// guaranteed to be present in the built client regardless of any prior
+    /// scope operations.
+    #[must_use]
+    pub fn build(mut self) -> CliTokenClient {
+        self.config.scopes.insert(OAuth2Scope::OpenId);
+        build_client(
+            self.client_id.0,
+            self.auth_url.0,
+            self.token_url.0,
+            self.config,
+        )
+    }
+}
+
+impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, NoOidc> {
+    /// Build a [`CliTokenClient`] from the configured builder.
     ///
-    /// Returns [`ConfigError::MissingField`] if `client_id`, `auth_url`, or `token_url` is not set.
-    /// Returns [`ConfigError::MissingField`] if `jwks_validator` is set but [`OAuth2Scope::OpenId`] is absent.
-    /// Returns [`ConfigError::InvalidUrl`] if `auth_url` or `token_url` cannot be parsed as a URL.
-    pub fn build(self) -> Result<CliTokenClient, ConfigError> {
-        let client_id = self
-            .client_id
-            .ok_or_else(|| ConfigError::MissingField("client_id".to_string()))?;
+    /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
+    /// at compile time. This method is infallible.
+    #[must_use]
+    pub fn build(self) -> CliTokenClient {
+        build_client(
+            self.client_id.0,
+            self.auth_url.0,
+            self.token_url.0,
+            self.config,
+        )
+    }
+}
 
-        let auth_url_str = self
-            .auth_url
-            .ok_or_else(|| ConfigError::MissingField("auth_url".to_string()))?;
-        let auth_url =
-            url::Url::parse(&auth_url_str).map_err(|source| ConfigError::InvalidUrl {
-                field: "auth_url".to_string(),
-                source,
-            })?;
-
-        let token_url_str = self
-            .token_url
-            .ok_or_else(|| ConfigError::MissingField("token_url".to_string()))?;
-        let token_url =
-            url::Url::parse(&token_url_str).map_err(|source| ConfigError::InvalidUrl {
-                field: "token_url".to_string(),
-                source,
-            })?;
-
-        if self.jwks_validator.is_some()
-            && !self.scopes.contains(&crate::pages::OAuth2Scope::OpenId)
-        {
-            return Err(ConfigError::MissingField(
-                "jwks_validator requires OpenId scope".to_string(),
-            ));
-        }
-
-        if self.from_open_id_configuration_used
-            && !self.scopes.contains(&crate::pages::OAuth2Scope::OpenId)
-        {
-            return Err(ConfigError::MissingField(
-                "from_open_id_configuration requires OpenId scope".to_string(),
-            ));
-        }
-
-        Ok(CliTokenClient {
-            client_id,
-            client_secret: self.client_secret,
-            auth_url,
-            token_url,
-            scopes: self.scopes,
-            port_config: self.port_config,
-            success_html: self.success_html,
-            error_html: self.error_html,
-            success_renderer: self.success_renderer,
-            error_renderer: self.error_renderer,
-            open_browser: self.open_browser,
-            timeout: self.timeout,
-            on_auth_url: self.on_auth_url,
-            on_url: self.on_url,
-            on_server_ready: self.on_server_ready,
-            jwks_validator: self.jwks_validator,
-        })
+fn build_client(
+    client_id: ClientId,
+    auth_url: url::Url,
+    token_url: url::Url,
+    config: BuilderConfig,
+) -> CliTokenClient {
+    CliTokenClient {
+        client_id,
+        client_secret: config.client_secret,
+        auth_url,
+        token_url,
+        scopes: config.scopes.into_iter().collect(),
+        port_config: config.port_config,
+        success_html: config.success_html,
+        error_html: config.error_html,
+        success_renderer: config.success_renderer,
+        error_renderer: config.error_renderer,
+        open_browser: config.open_browser,
+        timeout: config.timeout,
+        on_auth_url: config.on_auth_url,
+        on_url: config.on_url,
+        on_server_ready: config.on_server_ready,
+        jwks_validator: config.jwks_validator,
     }
 }
 
 #[cfg(test)]
 mod tests {
     #![expect(
-        clippy::panic,
         clippy::indexing_slicing,
         reason = "tests do not need to meet production lint standards"
     )]
 
-    use super::{CliTokenClient, CliTokenClientBuilder, ConfigError, parse_scopes};
+    use super::{
+        CliTokenClient, CliTokenClientBuilder, HasAuthUrl, HasClientId, HasTokenUrl, NoOidc,
+        parse_scopes,
+    };
     use crate::jwks::{JwksValidationError, JwksValidator};
     use crate::oidc::Token;
     use crate::pages::OAuth2Scope;
@@ -1110,89 +1226,27 @@ mod tests {
         assert!(oidc.claims().email().unwrap().is_verified());
     }
 
-    fn valid_builder() -> CliTokenClientBuilder {
+    fn valid_builder() -> CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, NoOidc> {
         CliTokenClient::builder()
             .client_id("test-client")
-            .auth_url("https://example.com/auth")
-            .token_url("https://example.com/token")
+            .auth_url(url::Url::parse("https://example.com/auth").unwrap())
+            .token_url(url::Url::parse("https://example.com/token").unwrap())
     }
 
     #[test]
     fn builder_returns_cli_token_client_builder() {
+        // Verifies the unparameterized alias resolves to the all-unset initial state.
         let _builder: CliTokenClientBuilder = CliTokenClient::builder();
     }
 
-    #[test]
-    fn build_without_client_id_returns_missing_field_error() {
-        let result = CliTokenClient::builder()
-            .auth_url("https://example.com/auth")
-            .token_url("https://example.com/token")
-            .build();
-        match result {
-            Err(ConfigError::MissingField(s)) => assert!(s.contains("client_id")),
-            Err(other) => panic!("Expected MissingField(client_id), got different error: {other}"),
-            Ok(_) => panic!("Expected error, got Ok"),
-        }
-    }
+    // NOTE: build_without_client_id, build_without_auth_url, and
+    // build_without_token_url are intentionally absent — omitting any of these
+    // fields now produces a *compile error* rather than a runtime Err, so there
+    // is no runtime behavior to test.
 
     #[test]
-    fn build_without_auth_url_returns_missing_field_error() {
-        let result = CliTokenClient::builder()
-            .client_id("test-client")
-            .token_url("https://example.com/token")
-            .build();
-        match result {
-            Err(ConfigError::MissingField(s)) => assert!(s.contains("auth_url")),
-            Err(other) => panic!("Expected MissingField(auth_url), got different error: {other}"),
-            Ok(_) => panic!("Expected error, got Ok"),
-        }
-    }
-
-    #[test]
-    fn build_without_token_url_returns_missing_field_error() {
-        let result = CliTokenClient::builder()
-            .client_id("test-client")
-            .auth_url("https://example.com/auth")
-            .build();
-        match result {
-            Err(ConfigError::MissingField(s)) => assert!(s.contains("token_url")),
-            Err(other) => panic!("Expected MissingField(token_url), got different error: {other}"),
-            Ok(_) => panic!("Expected error, got Ok"),
-        }
-    }
-
-    #[test]
-    fn build_with_invalid_auth_url_returns_invalid_url_error() {
-        let result = CliTokenClient::builder()
-            .client_id("test-client")
-            .auth_url("not a url")
-            .token_url("https://example.com/token")
-            .build();
-        match result {
-            Err(ConfigError::InvalidUrl { field, .. }) => assert_eq!(field, "auth_url"),
-            Err(other) => panic!("Expected InvalidUrl(auth_url), got different error: {other}"),
-            Ok(_) => panic!("Expected error, got Ok"),
-        }
-    }
-
-    #[test]
-    fn build_with_invalid_token_url_returns_invalid_url_error() {
-        let result = CliTokenClient::builder()
-            .client_id("test-client")
-            .auth_url("https://example.com/auth")
-            .token_url("also not a url")
-            .build();
-        match result {
-            Err(ConfigError::InvalidUrl { field, .. }) => assert_eq!(field, "token_url"),
-            Err(other) => panic!("Expected InvalidUrl(token_url), got different error: {other}"),
-            Ok(_) => panic!("Expected error, got Ok"),
-        }
-    }
-
-    #[test]
-    fn build_with_valid_inputs_returns_ok() {
-        let result = valid_builder().build();
-        assert!(result.is_ok(), "Expected Ok(CliTokenClient)");
+    fn build_with_valid_inputs_returns_client() {
+        let _client = valid_builder().build();
     }
 
     /// RFC 6749 §5.1: when the token response omits the scope field,
@@ -1258,25 +1312,14 @@ mod tests {
 
     #[test]
     fn build_with_jwks_validator_and_openid_scope_succeeds() {
-        let result = valid_builder()
-            .scopes([OAuth2Scope::OpenId])
+        let _client = valid_builder()
+            .with_openid_scope()
             .jwks_validator(Box::new(AcceptAll))
             .build();
-        assert!(result.is_ok(), "expected Ok when OpenId scope is present");
     }
 
-    #[test]
-    fn build_with_jwks_validator_but_no_openid_scope_returns_missing_field() {
-        let result = valid_builder().jwks_validator(Box::new(AcceptAll)).build();
-        match result {
-            Err(ConfigError::MissingField(s)) => assert!(
-                s.contains("OpenId"),
-                "expected message to mention OpenId, got: {s}"
-            ),
-            Err(other) => panic!("expected MissingField, got: {other}"),
-            Ok(_) => panic!("expected Err, got Ok"),
-        }
-    }
+    // NOTE: build_with_jwks_validator_but_no_openid_scope is intentionally
+    // absent — calling jwks_validator() on a NoOidc builder no longer compiles.
 
     fn make_open_id_configuration() -> crate::oidc::OpenIdConfiguration {
         use url::Url;
@@ -1288,50 +1331,17 @@ mod tests {
         )
     }
 
-    #[test]
-    fn from_open_id_configuration_without_openid_scope_fails_build() {
-        let config = make_open_id_configuration();
-        let result = CliTokenClientBuilder::from_open_id_configuration(&config)
-            .client_id("test-client")
-            .build();
-        match result {
-            Err(ConfigError::MissingField(s)) => assert!(
-                s.contains("from_open_id_configuration"),
-                "expected message to mention from_open_id_configuration, got: {s}"
-            ),
-            Err(other) => panic!("expected MissingField, got: {other}"),
-            Ok(_) => panic!("expected Err, got Ok"),
-        }
-    }
+    // NOTE: from_open_id_configuration_without_openid_scope_fails_build is
+    // intentionally absent — from_open_id_configuration() always returns a
+    // HasOidc builder, so a NoOidc build is impossible to construct.
 
     #[test]
-    fn from_open_id_configuration_with_openid_scope_passes_build() {
+    fn from_open_id_configuration_always_includes_openid_scope() {
         let config = make_open_id_configuration();
-        let result = CliTokenClientBuilder::from_open_id_configuration(&config)
+        // from_open_id_configuration enters HasOidc mode and pre-populates
+        // the openid scope; no explicit scope call needed.
+        let _client = CliTokenClientBuilder::from_open_id_configuration(&config)
             .client_id("test-client")
-            .scopes([OAuth2Scope::OpenId])
             .build();
-        assert!(
-            result.is_ok(),
-            "expected Ok when from_open_id_configuration + OpenId scope"
-        );
-    }
-
-    #[test]
-    fn with_open_id_configuration_jwks_validator_sets_jwks_validator() {
-        let config = make_open_id_configuration();
-        // Verify via the build failure path: with_open_id_configuration_jwks_validator sets
-        // the jwks_validator, which requires OpenId scope.
-        let result = valid_builder()
-            .with_open_id_configuration_jwks_validator(&config)
-            .build();
-        match result {
-            Err(ConfigError::MissingField(s)) => assert!(
-                s.contains("OpenId"),
-                "expected message to mention OpenId, got: {s}"
-            ),
-            Err(other) => panic!("expected MissingField, got: {other}"),
-            Ok(_) => panic!("expected Err when OpenId scope absent"),
-        }
     }
 }

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 /// An OAuth 2.0 scope value.
 ///
-/// Scopes are passed to [`crate::CliTokenClientBuilder::scopes`] to request
+/// Scopes are passed to [`crate::CliTokenClientBuilder::extend_scopes`] to request
 /// specific permissions from the authorization server.
 ///
 /// # Example
@@ -23,7 +23,7 @@ use std::fmt::Write as _;
 /// let roundtrip: OAuth2Scope = serde_json::from_str(&json).unwrap();
 /// assert_eq!(roundtrip, OAuth2Scope::OpenId);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[expect(
     clippy::exhaustive_enums,
     reason = "callers should be able to match all scopes exhaustively; new variants are a breaking change by design"

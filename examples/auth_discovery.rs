@@ -88,7 +88,7 @@ async fn main() {
 
     let mut builder = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
         .client_id(client_id)
-        .scopes(scopes)
+        .extend_scopes(scopes)
         .with_open_id_configuration_jwks_validator(&open_id_configuration)
         .on_url(|url| {
             tracing::info!("opening: {url}");
@@ -102,10 +102,7 @@ async fn main() {
         builder = builder.port_hint(port);
     }
 
-    let auth = builder.build().unwrap_or_else(|e| {
-        tracing::error!("configuration error: {e}");
-        std::process::exit(FAILURE_EXIT_CODE);
-    });
+    let auth = builder.build();
 
     tracing::info!("starting authorization flow");
 
