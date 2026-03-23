@@ -27,13 +27,14 @@
 //! ```no_run
 //! use loopauth::{CliTokenClient, OAuth2Scope};
 //!
-//! # async fn run() -> Result<(), loopauth::ConfigError> {
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = CliTokenClient::builder()
 //!     .client_id("my-client-id")
-//!     .auth_url("https://provider.example.com/authorize")
-//!     .token_url("https://provider.example.com/token")
-//!     .scopes([OAuth2Scope::OpenId, OAuth2Scope::Email])
-//!     .build()?;
+//!     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
+//!     .token_url(url::Url::parse("https://provider.example.com/token")?)
+//!     .with_openid_scope()
+//!     .extend_scopes([OAuth2Scope::Email])
+//!     .build();
 //!
 //! // let tokens = client.run_authorization_flow().await?;
 //! # Ok(())
@@ -53,8 +54,8 @@
 //!
 //! let client = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
 //!     .client_id("my-client-id")
-//!     .scopes([OAuth2Scope::OpenId, OAuth2Scope::Email])
-//!     .build()?;
+//!     .extend_scopes([OAuth2Scope::Email])
+//!     .build();
 //!
 //! // let tokens = client.run_authorization_flow().await?;
 //! # Ok(())
@@ -76,10 +77,11 @@ mod token;
 #[doc(hidden)]
 pub mod test_support;
 
-pub use builder::{CliTokenClient, CliTokenClientBuilder};
-pub use error::{
-    AuthError, CallbackError, ConfigError, IdTokenError, RefreshError, TokenStoreError,
+pub use builder::{
+    CliTokenClient, CliTokenClientBuilder, HasAuthUrl, HasClientId, HasOidc, HasTokenUrl,
+    NoAuthUrl, NoClientId, NoOidc, NoTokenUrl,
 };
+pub use error::{AuthError, CallbackError, IdTokenError, RefreshError, TokenStoreError};
 pub use jwks::{JwksValidationError, JwksValidator, RemoteJwksValidator};
 pub use pages::{
     ErrorPageContext, ErrorPageRenderer, OAuth2Scope, PageContext, SuccessPageRenderer,

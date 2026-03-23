@@ -30,8 +30,7 @@ async fn main() {
         .client_id("demo-client")
         .auth_url(server.auth_url())
         .token_url(server.token_url())
-        .build()
-        .expect("valid config");
+        .build();
 
     let mut current_tokens = client
         .refresh(server.refresh_token())

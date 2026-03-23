@@ -5,8 +5,7 @@
 use axum::{Json, Router, routing::get};
 use loopauth::test_support::FakeOAuthServer;
 use loopauth::{
-    CliTokenClientBuilder, JwksValidator, OAuth2Scope, RemoteJwksValidator,
-    oidc::OpenIdConfiguration,
+    CliTokenClientBuilder, JwksValidator, RemoteJwksValidator, oidc::OpenIdConfiguration,
 };
 use tokio::net::TcpListener;
 
@@ -69,19 +68,15 @@ async fn from_open_id_configuration_prefills_auth_and_token_urls() {
     let config = OpenIdConfiguration::fetch(server.issuer_url())
         .await
         .unwrap();
-    // from_open_id_configuration pre-fills auth_url and token_url - build should succeed with client_id + OpenId
-    let result = CliTokenClientBuilder::from_open_id_configuration(&config)
+    // from_open_id_configuration pre-fills auth_url and token_url and automatically
+    // includes the openid scope — build succeeds with client_id alone.
+    let _client = CliTokenClientBuilder::from_open_id_configuration(&config)
         .client_id("test-client")
-        .scopes(vec![OAuth2Scope::OpenId])
         .build();
-    assert!(
-        result.is_ok(),
-        "build should succeed when from_open_id_configuration pre-fills URLs"
-    );
 }
 
 #[tokio::test]
-async fn from_open_id_configuration_build_requires_openid_scope() {
+async fn from_open_id_configuration_build_always_includes_openid_scope() {
     let server = FakeOAuthServer::builder()
         .with_open_id_configuration()
         .start()
@@ -89,20 +84,11 @@ async fn from_open_id_configuration_build_requires_openid_scope() {
     let config = OpenIdConfiguration::fetch(server.issuer_url())
         .await
         .unwrap();
-    let result = CliTokenClientBuilder::from_open_id_configuration(&config)
+    // from_open_id_configuration enters HasOidc mode automatically — no
+    // explicit scope call needed, and omitting it is no longer a build error.
+    let _client = CliTokenClientBuilder::from_open_id_configuration(&config)
         .client_id("test-client")
-        // No OpenId scope - should fail
         .build();
-    match result {
-        Err(err) => {
-            let err_str = format!("{err:?}");
-            assert!(
-                err_str.contains("from_open_id_configuration requires OpenId scope"),
-                "got: {err_str}"
-            );
-        }
-        Ok(_) => panic!("build should fail without OpenId scope"),
-    }
 }
 
 #[tokio::test]

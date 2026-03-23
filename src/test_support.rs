@@ -288,14 +288,14 @@ impl FakeOAuthServer {
 
     /// Returns the authorization URL for this fake server.
     #[must_use]
-    pub fn auth_url(&self) -> String {
-        format!("http://127.0.0.1:{}/authorize", self.port)
+    pub fn auth_url(&self) -> url::Url {
+        url::Url::parse(&format!("http://127.0.0.1:{}/authorize", self.port)).unwrap()
     }
 
     /// Returns the token URL for this fake server.
     #[must_use]
-    pub fn token_url(&self) -> String {
-        format!("http://127.0.0.1:{}/token", self.port)
+    pub fn token_url(&self) -> url::Url {
+        url::Url::parse(&format!("http://127.0.0.1:{}/token", self.port)).unwrap()
     }
 
     /// Returns the issuer URL for this fake server (`http://127.0.0.1:{port}`).

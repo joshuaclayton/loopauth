@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use loopauth::test_support::FakeOAuthServer;
-use loopauth::{AuthError, CliTokenClient, JwksValidationError, JwksValidator, OAuth2Scope};
+use loopauth::{AuthError, CliTokenClient, JwksValidationError, JwksValidator};
 
 struct AlwaysAccept;
 
@@ -66,14 +66,13 @@ async fn run_flow(label: &str, validator: impl JwksValidator + 'static) {
         .client_id("demo-client")
         .auth_url(fake.auth_url())
         .token_url(fake.token_url())
-        .scopes(vec![OAuth2Scope::OpenId])
+        .with_openid_scope()
         .open_browser(false)
         .jwks_validator(Box::new(validator))
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());
         })
-        .build()
-        .expect("valid config");
+        .build();
 
     match client.run_authorization_flow().await {
         Ok(tokens) => tracing::info!(
