@@ -1,4 +1,8 @@
-#![expect(clippy::string_slice, reason = "CLI examples can be more lax")]
+#![expect(
+    clippy::string_slice,
+    clippy::expect_used,
+    reason = "CLI examples can be more lax"
+)]
 // # Usage
 //   cargo run --example jwks_demo
 //
@@ -44,7 +48,9 @@ async fn main() {
 }
 
 async fn run_flow(label: &str, validator: impl JwksValidator + 'static) {
-    let fake = FakeOAuthServer::start_with_oidc("demo_token", "user_1", "user@example.com").await;
+    let fake =
+        FakeOAuthServer::start_with_oidc("demo_token", "user_1", "user@example.com", "demo-client")
+            .await;
     tokio::task::yield_now().await;
 
     let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();

@@ -1,3 +1,4 @@
+#![expect(clippy::expect_used, reason = "CLI examples can be more lax")]
 // # Usage
 //   cargo run --example refresh_demo
 //

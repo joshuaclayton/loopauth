@@ -14,9 +14,11 @@
 mod claims;
 mod configuration;
 mod error;
+pub(crate) mod string_or_vec;
 mod token;
 
 pub use claims::{Audience, Claims, Email, Issuer, PictureUrl, SubjectIdentifier};
 pub use configuration::OpenIdConfiguration;
 pub use error::OpenIdConfigurationError;
+pub(crate) use token::IssuerValidation;
 pub use token::Token;

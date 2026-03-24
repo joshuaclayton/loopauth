@@ -27,6 +27,9 @@ pub enum AuthError {
         /// Response body from the token endpoint.
         body: String,
     },
+    /// A network-level request error occurred.
+    #[error("request failed: {0}")]
+    Request(#[from] reqwest::Error),
     /// An internal server or channel error occurred.
     #[error("server error: {0}")]
     Server(String),
@@ -92,6 +95,26 @@ pub enum IdTokenError {
     /// The `openid` scope was requested but the provider did not return an `id_token`.
     #[error("openid scope was requested but no id_token was returned")]
     NoIdToken,
+    /// The `id_token` could not be parsed (malformed JWT, missing required claims).
+    #[error("malformed id_token: {0}")]
+    MalformedIdToken(String),
+    /// The `id_token` has expired (`exp` claim is in the past).
+    #[error("id_token has expired")]
+    Expired,
+    /// The `id_token` is not yet valid (`nbf` claim is in the future).
+    #[error("id_token is not yet valid")]
+    NotYetValid,
+    /// The `aud` claim does not include the configured `client_id`.
+    #[error("id_token audience does not include client_id")]
+    InvalidAudience,
+    /// The `iss` claim does not match the configured issuer.
+    #[error("id_token issuer mismatch: expected {expected}, got {got}")]
+    InvalidIssuer {
+        /// The issuer that was expected (from configuration).
+        expected: String,
+        /// The issuer found in the `id_token`.
+        got: String,
+    },
 }
 
 /// Errors that can occur in [`crate::TokenStore`] implementations.

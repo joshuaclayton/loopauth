@@ -57,9 +57,9 @@ impl<'de> Deserialize<'de> for Claims {
             iss: super::Issuer,
             #[serde(default, deserialize_with = "deserialize_aud")]
             aud: Vec<Audience>,
-            #[serde(default = "unix_epoch", deserialize_with = "deserialize_system_time")]
+            #[serde(deserialize_with = "deserialize_system_time")]
             iat: SystemTime,
-            #[serde(default = "unix_epoch", deserialize_with = "deserialize_system_time")]
+            #[serde(deserialize_with = "deserialize_system_time")]
             exp: SystemTime,
         }
 
@@ -89,12 +89,7 @@ fn deserialize_aud<'de, D>(deserializer: D) -> Result<Vec<Audience>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StringOrVec {
-        Single(String),
-        Multiple(Vec<String>),
-    }
+    use crate::oidc::string_or_vec::StringOrVec;
 
     let opt = Option::<StringOrVec>::deserialize(deserializer)?;
     Ok(match opt {
@@ -102,8 +97,4 @@ where
         Some(StringOrVec::Single(s)) => vec![Audience::new(s)],
         Some(StringOrVec::Multiple(v)) => v.into_iter().map(Audience::new).collect(),
     })
-}
-
-const fn unix_epoch() -> SystemTime {
-    UNIX_EPOCH
 }

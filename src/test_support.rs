@@ -68,6 +68,10 @@ impl FakeOAuthServerBuilder {
         let rsa_private_key = if self.with_jwks {
             let mut rng = rsa::rand_core::OsRng;
             Some(
+                #[expect(
+                    clippy::expect_used,
+                    reason = "test support: key gen failure is a hard stop"
+                )]
                 rsa::RsaPrivateKey::new(&mut rng, RSA_KEY_BITS).expect("RSA key generation failed"),
             )
         } else {
@@ -86,7 +90,7 @@ impl FakeOAuthServerBuilder {
 
         // Build the router
         let mut app = Router::new()
-            .route("/authorize", get(authorize_handler_no_token))
+            .route("/authorize", get(authorize_handler))
             .route(
                 "/token",
                 post(move || async move { StatusCode::NOT_IMPLEMENTED }),
@@ -179,7 +183,7 @@ impl FakeOAuthServer {
         let port = listener.local_addr().unwrap().port();
 
         let app = Router::new()
-            .route("/authorize", get(authorize_handler_no_token))
+            .route("/authorize", get(authorize_handler))
             .route(
                 "/token",
                 post(move || async move {
@@ -246,11 +250,13 @@ impl FakeOAuthServer {
         token_value: impl Into<String>,
         id_token_sub: impl Into<String>,
         id_token_email: impl Into<String>,
+        client_id: impl Into<String>,
     ) -> Self {
         let access_token = Arc::new(token_value.into());
         let id_token = Arc::new(make_fake_id_token(
             &id_token_sub.into(),
             &id_token_email.into(),
+            &client_id.into(),
         ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -332,31 +338,38 @@ impl FakeOAuthServer {
     /// Panics if the server was not started with `.with_jwks()` via the builder.
     #[must_use]
     pub fn sign_jwt(&self, claims: &serde_json::Value) -> String {
+        #[expect(
+            clippy::expect_used,
+            reason = "test support: misconfigured server is a hard stop"
+        )]
         let private_key = self
             .rsa_private_key
             .as_ref()
             .expect("sign_jwt requires FakeOAuthServer::builder().with_jwks().start()");
+        #[expect(
+            clippy::expect_used,
+            reason = "test support: PEM export failure is a hard stop"
+        )]
         let pem = private_key
             .to_pkcs8_pem(LineEnding::LF)
             .expect("PEM export failed");
+        #[expect(
+            clippy::expect_used,
+            reason = "test support: encoding key failure is a hard stop"
+        )]
         let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes())
             .expect("encoding key from PEM failed");
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
         header.kid = Some("test-key".to_owned());
+        #[expect(
+            clippy::expect_used,
+            reason = "test support: JWT encoding failure is a hard stop"
+        )]
         jsonwebtoken::encode(&header, &claims, &encoding_key).expect("JWT signing failed")
     }
 }
 
 async fn authorize_handler(Query(params): Query<AuthorizeParams>) -> Redirect {
-    let redirect_url = format!(
-        "{}?code=fake_code&state={}",
-        params.redirect_uri, params.state
-    );
-    Redirect::temporary(&redirect_url)
-}
-
-// For error server that needs the /authorize route but no token state
-async fn authorize_handler_no_token(Query(params): Query<AuthorizeParams>) -> Redirect {
     let redirect_url = format!(
         "{}?code=fake_code&state={}",
         params.redirect_uri, params.state
@@ -410,11 +423,11 @@ async fn refresh_token_handler(
     }))
 }
 
-/// Build a minimal fake JWT string (unsigned) with the given `sub` and `email` claims.
-pub fn make_fake_id_token(sub: &str, email: &str) -> String {
+/// Build a minimal fake JWT string (unsigned) with the given `sub`, `email`, and `client_id` claims.
+pub fn make_fake_id_token(sub: &str, email: &str, client_id: &str) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
     let claims = URL_SAFE_NO_PAD.encode(format!(
-        r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","iat":1000000000}}"#
+        r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","aud":["{client_id}"],"iat":1000000000,"exp":9999999999}}"#
     ));
     format!("{header}.{claims}.fakesig")
 }

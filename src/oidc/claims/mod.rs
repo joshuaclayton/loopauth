@@ -184,12 +184,19 @@ impl Claims {
     pub const fn exp(&self) -> SystemTime {
         self.exp
     }
+
+    /// Returns `true` if the ID token has expired (`exp` is in the past).
+    #[must_use]
+    pub fn is_expired(&self) -> bool {
+        SystemTime::now() >= self.exp
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #![expect(
         clippy::indexing_slicing,
+        clippy::expect_used,
         reason = "tests do not need to meet production lint standards"
     )]
     use super::Claims;

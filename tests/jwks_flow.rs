@@ -1,5 +1,6 @@
 #![expect(
     clippy::panic,
+    clippy::expect_used,
     reason = "tests do not need to meet production lint standards"
 )]
 use async_trait::async_trait;
@@ -75,7 +76,13 @@ impl JwksValidator for AlwaysReject {
 
 #[tokio::test]
 async fn jwks_validator_passing_returns_ok() {
-    let fake = FakeOAuthServer::start_with_oidc("oidc_token", "user_42", "user@example.com").await;
+    let fake = FakeOAuthServer::start_with_oidc(
+        "oidc_token",
+        "user_42",
+        "user@example.com",
+        "test-client",
+    )
+    .await;
     tokio::task::yield_now().await;
 
     let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
@@ -137,7 +144,13 @@ fn sign_rs256_jwt(private_key: &rsa::RsaPrivateKey, kid: Option<&str>, client_id
 
 #[tokio::test]
 async fn jwks_validator_rejecting_returns_jwks_validation_failed() {
-    let fake = FakeOAuthServer::start_with_oidc("oidc_token", "user_42", "user@example.com").await;
+    let fake = FakeOAuthServer::start_with_oidc(
+        "oidc_token",
+        "user_42",
+        "user@example.com",
+        "test-client",
+    )
+    .await;
     tokio::task::yield_now().await;
 
     let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();

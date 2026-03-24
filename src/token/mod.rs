@@ -120,6 +120,12 @@ impl<S: ValidationState> TokenSet<S> {
         self.oidc.as_ref().map(oidc::Token::raw)
     }
 
+    /// Returns the OIDC token regardless of validation state. Used internally for claim validation.
+    #[must_use]
+    pub(crate) const fn oidc_token(&self) -> Option<&oidc::Token> {
+        self.oidc.as_ref()
+    }
+
     /// Returns the scopes granted with this token set.
     #[must_use]
     pub fn scopes(&self) -> &[OAuth2Scope] {
@@ -222,6 +228,7 @@ pub enum RefreshOutcome {
 mod tests {
     #![expect(
         clippy::indexing_slicing,
+        clippy::expect_used,
         reason = "tests do not need to meet production lint standards"
     )]
     use super::{AccessToken, RefreshToken, TokenSet, Validated};
@@ -307,7 +314,7 @@ mod tests {
             UNIX_EPOCH,
             UNIX_EPOCH,
         );
-        let oidc = oidc::Token::new("raw.jwt.string".to_string(), claims);
+        let oidc = oidc::Token::new("raw.jwt.string".to_string(), claims, None);
         assert_eq!(oidc.raw(), "raw.jwt.string");
     }
 
@@ -359,7 +366,7 @@ mod tests {
             UNIX_EPOCH,
             UNIX_EPOCH,
         );
-        let oidc = oidc::Token::new("header.payload.sig".to_string(), claims);
+        let oidc = oidc::Token::new("header.payload.sig".to_string(), claims, None);
         let token = TokenSet::new(
             "access".to_string(),
             None,

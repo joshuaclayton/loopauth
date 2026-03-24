@@ -1,5 +1,6 @@
 #![expect(
     clippy::panic,
+    clippy::expect_used,
     reason = "tests do not need to meet production lint standards"
 )]
 use loopauth::{CliTokenClient, RefreshError, RefreshOutcome, test_support::FakeOAuthServer};

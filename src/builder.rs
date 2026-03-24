@@ -40,6 +40,7 @@ pub struct CliTokenClient {
     client_secret: Option<String>,
     auth_url: url::Url,
     token_url: url::Url,
+    issuer: Option<url::Url>,
     scopes: Vec<OAuth2Scope>,
     port_config: PortConfig,
     success_html: Option<String>,
@@ -248,9 +249,17 @@ impl CliTokenClient {
         )
         .await?;
         if self.scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
-            validate_jwks(self.jwks_validator.as_ref(), unvalidated)
-                .await
-                .map_err(RefreshError::IdToken)
+            validate_jwks(
+                self.jwks_validator.as_ref(),
+                unvalidated,
+                self.client_id.as_str(),
+                self.issuer.as_ref().map_or(
+                    crate::oidc::IssuerValidation::Skip,
+                    crate::oidc::IssuerValidation::MustMatch,
+                ),
+            )
+            .await
+            .map_err(RefreshError::IdToken)
         } else {
             Ok(unvalidated.into_validated())
         }
@@ -316,6 +325,20 @@ struct TokenResponse {
     scope: Option<String>,
 }
 
+/// Parse an `id_token` JWT from a token response, if `openid` was in the requested scopes.
+///
+/// Returns `Ok(None)` when `openid` was not requested or when the provider omitted `id_token`.
+/// Returns `Err(IdTokenError)` when parsing the JWT fails.
+fn parse_oidc_if_requested(
+    id_token: Option<&str>,
+    scopes: &[crate::pages::OAuth2Scope],
+) -> Result<Option<crate::oidc::Token>, crate::error::IdTokenError> {
+    if !scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
+        return Ok(None);
+    }
+    id_token.map(crate::oidc::Token::from_raw_jwt).transpose()
+}
+
 /// Parse a space-separated scope string into a `Vec<OAuth2Scope>`.
 fn parse_scopes(scope_str: &str) -> Vec<OAuth2Scope> {
     scope_str
@@ -362,22 +385,35 @@ fn validate_callback_code(
     }
 }
 
+/// Validate an ID token and promote the token set to the [`crate::token::Validated`] state.
+///
+/// Two-phase validation per RFC 7519 §7.2:
+/// 1. Cryptographic signature check via JWKS (when a validator is configured).
+/// 2. Standard claims: `exp`, `nbf`, `aud`, and optionally `iss`.
+///
+/// Claims are only checked after the signature is verified to prevent accepting
+/// claims from a tampered or unsigned token.
 async fn validate_jwks(
     validator: Option<&crate::jwks::JwksValidatorStorage>,
     token_set: crate::token::TokenSet<crate::token::Unvalidated>,
+    client_id: &str,
+    issuer: crate::oidc::IssuerValidation<'_>,
 ) -> Result<crate::token::TokenSet<crate::token::Validated>, crate::error::IdTokenError> {
-    match (validator, token_set.id_token_raw()) {
-        (Some(validator), Some(raw)) => {
-            validator
-                .validate(raw)
-                .await
-                .map_err(crate::error::IdTokenError::JwksValidationFailed)?;
+    use crate::error::IdTokenError;
 
-            Ok(token_set.into_validated())
-        }
-        (None, Some(_)) => Ok(token_set.into_validated()),
-        _ => Err(crate::error::IdTokenError::NoIdToken),
+    let oidc = token_set.oidc_token().ok_or(IdTokenError::NoIdToken)?;
+
+    if let Some(validator) = validator {
+        validator
+            .validate(oidc.raw())
+            .await
+            .map_err(IdTokenError::JwksValidationFailed)?;
     }
+
+    // RFC 7519 §7.2: validate standard claims after signature check
+    oidc.validate_standard_claims(client_id, issuer)?;
+
+    Ok(token_set.into_validated())
 }
 
 async fn handle_callback(
@@ -439,9 +475,17 @@ async fn handle_callback(
 
     // Run JWKS validation when openid scope was requested; otherwise promote directly
     let token_set = if auth.scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
-        match validate_jwks(auth.jwks_validator.as_ref(), token_set)
-            .await
-            .map_err(AuthError::IdToken)
+        match validate_jwks(
+            auth.jwks_validator.as_ref(),
+            token_set,
+            auth.client_id.as_str(),
+            auth.issuer.as_ref().map_or(
+                crate::oidc::IssuerValidation::Skip,
+                crate::oidc::IssuerValidation::MustMatch,
+            ),
+        )
+        .await
+        .map_err(AuthError::IdToken)
         {
             Ok(ts) => ts,
             Err(e) => {
@@ -545,8 +589,7 @@ async fn exchange_code(
         .header(reqwest::header::ACCEPT, "application/json")
         .form(&params)
         .send()
-        .await
-        .map_err(|e| AuthError::Server(e.to_string()))?;
+        .await?;
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -554,10 +597,7 @@ async fn exchange_code(
         return Err(AuthError::TokenExchange { status, body });
     }
 
-    let body = response
-        .text()
-        .await
-        .map_err(|e| AuthError::Server(e.to_string()))?;
+    let body = response.text().await?;
     let token_response: TokenResponse =
         serde_json::from_str(&body).map_err(|e| AuthError::Server(format!("{e}: {body}")))?;
 
@@ -565,14 +605,8 @@ async fn exchange_code(
         .expires_in
         .map(|secs| std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
 
-    let oidc = if scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
-        token_response
-            .id_token
-            .as_deref()
-            .and_then(crate::oidc::Token::from_raw_jwt)
-    } else {
-        None
-    };
+    let oidc = parse_oidc_if_requested(token_response.id_token.as_deref(), scopes)
+        .map_err(AuthError::IdToken)?;
 
     // RFC 6749 §5.1: if scope omitted, use requested scopes
     let resolved_scopes = token_response
@@ -627,14 +661,8 @@ async fn exchange_refresh_token(
         .expires_in
         .map(|secs| std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
 
-    let oidc = if scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
-        token_response
-            .id_token
-            .as_deref()
-            .and_then(crate::oidc::Token::from_raw_jwt)
-    } else {
-        None
-    };
+    let oidc = parse_oidc_if_requested(token_response.id_token.as_deref(), scopes)
+        .map_err(RefreshError::IdToken)?;
 
     // RFC 6749 §5.1: if scope omitted, use requested scopes
     let resolved_scopes = token_response
@@ -707,6 +735,7 @@ pub struct HasOidc;
 // individual optional field.
 struct BuilderConfig {
     client_secret: Option<String>,
+    issuer: Option<url::Url>,
     scopes: std::collections::BTreeSet<OAuth2Scope>,
     port_config: PortConfig,
     success_html: Option<String>,
@@ -736,6 +765,7 @@ impl Default for BuilderConfig {
             on_auth_url: None,
             on_url: None,
             on_server_ready: None,
+            issuer: None,
             jwks_validator: None,
         }
     }
@@ -839,6 +869,7 @@ impl CliTokenClientBuilder {
             token_url: HasTokenUrl(open_id_configuration.token_endpoint().clone()),
             _oidc: std::marker::PhantomData,
             config: BuilderConfig {
+                issuer: Some(open_id_configuration.issuer().clone()),
                 scopes: std::collections::BTreeSet::from([OAuth2Scope::OpenId]),
                 ..BuilderConfig::default()
             },
@@ -859,6 +890,17 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
             _oidc: std::marker::PhantomData,
             config: self.config,
         }
+    }
+
+    /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
+    ///
+    /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
+    /// When using [`CliTokenClientBuilder::from_open_id_configuration`] the issuer is set
+    /// automatically from the discovery document.
+    #[must_use]
+    pub fn issuer(mut self, v: url::Url) -> Self {
+        self.config.issuer = Some(v);
+        self
     }
 
     /// Set the authorization endpoint URL. Required.
@@ -1122,6 +1164,7 @@ fn build_client(
         client_secret: config.client_secret,
         auth_url,
         token_url,
+        issuer: config.issuer,
         scopes: config.scopes.into_iter().collect(),
         port_config: config.port_config,
         success_html: config.success_html,
@@ -1141,6 +1184,7 @@ fn build_client(
 mod tests {
     #![expect(
         clippy::indexing_slicing,
+        clippy::expect_used,
         reason = "tests do not need to meet production lint standards"
     )]
 
@@ -1157,7 +1201,7 @@ mod tests {
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
         let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
         let claims = URL_SAFE_NO_PAD.encode(format!(
-            r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","iat":1000000000}}"#
+            r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","iat":1000000000,"exp":9999999999}}"#
         ));
         format!("{header}.{claims}.fakesig")
     }
@@ -1178,14 +1222,9 @@ mod tests {
     }
 
     #[test]
-    fn oidc_token_from_raw_jwt_returns_some_for_valid_fake_jwt() {
+    fn oidc_token_from_raw_jwt_returns_ok_for_valid_fake_jwt() {
         let jwt = fake_jwt("user_42", "user@example.com");
-        let result = Token::from_raw_jwt(&jwt);
-        assert!(
-            result.is_some(),
-            "expected Some(OidcToken) for valid fake JWT"
-        );
-        let oidc = result.unwrap();
+        let oidc = Token::from_raw_jwt(&jwt).expect("expected Ok for valid fake JWT");
         assert_eq!(oidc.claims().sub().as_str(), "user_42");
         assert_eq!(
             oidc.claims().email().map(crate::oidc::Email::as_str),
@@ -1194,13 +1233,13 @@ mod tests {
     }
 
     #[test]
-    fn oidc_token_from_raw_jwt_returns_none_for_invalid_input() {
+    fn oidc_token_from_raw_jwt_returns_err_for_invalid_input() {
         let result = Token::from_raw_jwt("not.a.jwt");
-        assert!(result.is_none(), "expected None for invalid JWT");
+        assert!(result.is_err(), "expected Err for invalid JWT");
     }
 
     #[test]
-    fn oidc_token_from_raw_jwt_with_aud_claim_returns_some() {
+    fn oidc_token_from_raw_jwt_with_aud_claim_returns_ok() {
         // Google-style JWTs always include an `aud` claim (the client ID).
         // Ensure we decode them without requiring audience validation.
         let jwt = fake_jwt_google_style(
@@ -1210,9 +1249,7 @@ mod tests {
             "https://example.com/photo.jpg",
             "my-client-id.apps.googleusercontent.com",
         );
-        let result = Token::from_raw_jwt(&jwt);
-        assert!(result.is_some(), "expected Some for JWT with aud claim");
-        let oidc = result.unwrap();
+        let oidc = Token::from_raw_jwt(&jwt).expect("expected Ok for JWT with aud claim");
         assert_eq!(oidc.claims().sub().as_str(), "1234567890");
         assert_eq!(
             oidc.claims().email().map(crate::oidc::Email::as_str),

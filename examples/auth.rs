@@ -1,6 +1,7 @@
 #![expect(
     clippy::print_stdout,
     clippy::exit,
+    clippy::expect_used,
     reason = "CLI examples can be more lax"
 )]
 //! End-to-end provider token acquisition example (manual configuration).

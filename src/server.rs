@@ -121,6 +121,7 @@ pub async fn run_callback_server(
 mod tests {
     #![expect(
         clippy::panic,
+        clippy::expect_used,
         reason = "tests do not need to meet production lint standards"
     )]
 
