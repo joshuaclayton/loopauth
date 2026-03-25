@@ -198,6 +198,7 @@ impl Token {
     /// Checks, in order:
     /// - `exp` (§4.1.4) — token must not be expired beyond [`CLOCK_SKEW_LEEWAY`]
     /// - `nbf` (§4.1.5) — token must not be more than [`CLOCK_SKEW_LEEWAY`] in the future
+    /// - `iat` (§4.1.6) — token must not claim to have been issued more than [`CLOCK_SKEW_LEEWAY`] in the future
     /// - `aud` — must be present and must contain `client_id`
     /// - `iss` — must match `issuer` when one is configured
     ///
@@ -221,6 +222,14 @@ impl Token {
             && SystemTime::now() + CLOCK_SKEW_LEEWAY < nbf
         {
             return Err(IdTokenError::NotYetValid);
+        }
+
+        // §4.1.6 — iat: reject tokens claiming to have been issued in the future
+        // (beyond leeway), which indicates forgery or severe clock misconfiguration.
+        if self.claims.iat() > SystemTime::now() + CLOCK_SKEW_LEEWAY {
+            return Err(IdTokenError::MalformedIdToken(
+                "iat claim is in the future".to_owned(),
+            ));
         }
 
         // OIDC Core §2: aud is required for ID tokens and MUST contain client_id.
@@ -343,6 +352,50 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected Ok for token with nbf within leeway, got {result:?}"
+        );
+    }
+
+    fn token_with_iat_offset(offset_secs: i64) -> Token {
+        let exp = SystemTime::now() + Duration::from_secs(3600);
+        let iat = if offset_secs >= 0 {
+            SystemTime::now() + Duration::from_secs(offset_secs.cast_unsigned())
+        } else {
+            SystemTime::now() - Duration::from_secs((-offset_secs).cast_unsigned())
+        };
+        let iss = url::Url::parse("https://issuer.example.com").expect("valid url");
+        let claims = Claims::new(
+            "sub".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            iss,
+            vec![Audience::new("client".to_owned())],
+            iat,
+            exp,
+        );
+        Token::new("raw.jwt.token".to_owned(), claims, None)
+    }
+
+    #[test]
+    fn iat_beyond_leeway_in_future_returns_malformed() {
+        // Issued 2 minutes in the future — beyond the 60s leeway
+        let token = token_with_iat_offset(120);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        assert!(
+            matches!(result, Err(crate::error::IdTokenError::MalformedIdToken(_))),
+            "expected MalformedIdToken for future iat, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn iat_within_leeway_in_future_is_accepted() {
+        // Issued 30 seconds in the future — within the 60s leeway
+        let token = token_with_iat_offset(30);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        assert!(
+            result.is_ok(),
+            "expected Ok for token with iat within leeway, got {result:?}"
         );
     }
 }
