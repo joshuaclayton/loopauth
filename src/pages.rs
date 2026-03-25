@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 /// An OAuth 2.0 scope value.
 ///
-/// Scopes are passed to [`crate::CliTokenClientBuilder::extend_scopes`] to request
+/// Scopes are passed to [`crate::CliTokenClientBuilder::add_scopes`] to request
 /// specific permissions from the authorization server.
 ///
 /// # Example

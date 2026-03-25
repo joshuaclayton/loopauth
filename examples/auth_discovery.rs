@@ -88,7 +88,7 @@ async fn main() {
 
     let mut builder = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
         .client_id(client_id)
-        .extend_scopes(scopes)
+        .add_scopes(scopes)
         .with_open_id_configuration_jwks_validator(&open_id_configuration)
         .on_url(|url| {
             tracing::info!("opening: {url}");

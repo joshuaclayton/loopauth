@@ -38,7 +38,7 @@ async fn oidc_round_trip_with_openid_scope_populates_claims() {
         .token_url(fake.token_url())
         .with_openid_scope()
         .without_jwks_validation()
-        .extend_scopes([OAuth2Scope::Email])
+        .add_scopes([OAuth2Scope::Email])
         .open_browser(false)
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());

@@ -33,7 +33,7 @@
 //!     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
 //!     .token_url(url::Url::parse("https://provider.example.com/token")?)
 //!     .with_openid_scope()
-//!     .extend_scopes([OAuth2Scope::Email])
+//!     .add_scopes([OAuth2Scope::Email])
 //!     .without_jwks_validation() // or .jwks_validator(Box::new(my_validator))
 //!     .build();
 //!
@@ -56,7 +56,7 @@
 //! let client = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
 //!     .client_id("my-client-id")
 //!     .with_open_id_configuration_jwks_validator(&open_id_configuration)
-//!     .extend_scopes([OAuth2Scope::Email])
+//!     .add_scopes([OAuth2Scope::Email])
 //!     .build();
 //!
 //! // let tokens = client.run_authorization_flow().await?;

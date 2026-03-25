@@ -264,7 +264,7 @@ impl CliTokenClient {
         )
         .await?;
         if let Some(oidc_jwks) = &self.oidc_jwks {
-            validate_jwks(
+            validate_id_token(
                 oidc_jwks,
                 unvalidated,
                 self.client_id.as_str(),
@@ -408,7 +408,7 @@ fn validate_callback_code(
 ///
 /// Claims are only checked after the signature is verified to prevent accepting
 /// claims from a tampered or unsigned token.
-async fn validate_jwks(
+async fn validate_id_token(
     oidc_jwks: &OidcJwksConfig,
     token_set: crate::token::TokenSet<crate::token::Unvalidated>,
     client_id: &str,
@@ -490,7 +490,7 @@ async fn handle_callback(
 
     // Run JWKS validation when OIDC is configured; otherwise promote directly
     let token_set = if let Some(oidc_jwks) = &auth.oidc_jwks {
-        match validate_jwks(
+        match validate_id_token(
             oidc_jwks,
             token_set,
             auth.client_id.as_str(),
@@ -843,7 +843,7 @@ impl Default for BuilderConfig {
 ///     .token_url(url::Url::parse("https://provider.example.com/token")?)
 ///     .with_openid_scope()
 ///     .without_jwks_validation() // or .jwks_validator(Box::new(my_validator))
-///     .extend_scopes([OAuth2Scope::Email, OAuth2Scope::OfflineAccess])
+///     .add_scopes([OAuth2Scope::Email, OAuth2Scope::OfflineAccess])
 ///     .on_auth_url(|url| {
 ///         url.query_pairs_mut().append_pair("access_type", "offline");
 ///     })
@@ -962,14 +962,17 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
         self
     }
 
-    /// Extend the set of OAuth 2.0 scopes to request.
+    /// Add OAuth 2.0 scopes to the request.
+    ///
+    /// Scopes accumulate across multiple calls and are deduplicated. Call order
+    /// does not affect the final scope set.
     ///
     /// To include the `openid` scope and enable OIDC features, use
     /// [`with_openid_scope`] instead — it also unlocks JWKS validator methods.
     ///
     /// [`with_openid_scope`]: CliTokenClientBuilder::with_openid_scope
     #[must_use]
-    pub fn extend_scopes(mut self, v: impl IntoIterator<Item = OAuth2Scope>) -> Self {
+    pub fn add_scopes(mut self, v: impl IntoIterator<Item = OAuth2Scope>) -> Self {
         self.config.scopes.extend(v);
         self
     }

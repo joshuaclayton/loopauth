@@ -87,7 +87,7 @@ async fn main() {
         .client_id(client_id)
         .auth_url(auth_url)
         .token_url(token_url)
-        .extend_scopes(scopes)
+        .add_scopes(scopes)
         .on_url(|url| {
             tracing::info!("opening: {url}");
             tracing::info!("waiting for browser callback... (Ctrl+C to cancel)");
