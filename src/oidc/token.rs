@@ -2,6 +2,13 @@ use super::{Audience, Claims};
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
 
+/// Permitted clock skew when validating `exp` and `nbf` claims (RFC 7519 §4.1.4–5).
+///
+/// Tokens that expired up to this duration ago (or whose `nbf` is up to this duration
+/// in the future) are still accepted to account for clock drift between the issuer and
+/// the client.
+const CLOCK_SKEW_LEEWAY: Duration = Duration::from_secs(60);
+
 /// Controls whether the `iss` claim is validated during ID token verification.
 ///
 /// Passing [`IssuerValidation::Skip`] is a deliberate opt-out of issuer validation.
@@ -189,8 +196,8 @@ impl Token {
     /// Validate standard JWT/OIDC claims per RFC 7519 §7.2 and OIDC Core §2.
     ///
     /// Checks, in order:
-    /// - `exp` (§4.1.4) — token must not be expired
-    /// - `nbf` (§4.1.5) — token must not be used before its not-before time
+    /// - `exp` (§4.1.4) — token must not be expired beyond [`CLOCK_SKEW_LEEWAY`]
+    /// - `nbf` (§4.1.5) — token must not be more than [`CLOCK_SKEW_LEEWAY`] in the future
     /// - `aud` — must be present and must contain `client_id`
     /// - `iss` — must match `issuer` when one is configured
     ///
@@ -204,14 +211,14 @@ impl Token {
     ) -> Result<(), crate::error::IdTokenError> {
         use crate::error::IdTokenError;
 
-        // §4.1.4 — exp
-        if self.claims.is_expired() {
+        // §4.1.4 — exp: reject only if expired beyond the leeway window
+        if SystemTime::now() > self.claims.exp() + CLOCK_SKEW_LEEWAY {
             return Err(IdTokenError::Expired);
         }
 
-        // §4.1.5 — nbf
+        // §4.1.5 — nbf: accept tokens whose nbf is within the leeway window
         if let Some(nbf) = self.nbf
-            && SystemTime::now() < nbf
+            && SystemTime::now() + CLOCK_SKEW_LEEWAY < nbf
         {
             return Err(IdTokenError::NotYetValid);
         }
@@ -237,5 +244,105 @@ impl Token {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(
+        clippy::expect_used,
+        reason = "tests do not need to meet production lint standards"
+    )]
+
+    use super::*;
+    use crate::oidc::claims::Audience;
+
+    fn token_with_exp_offset(offset_secs: i64) -> Token {
+        let exp = if offset_secs >= 0 {
+            SystemTime::now() + Duration::from_secs(offset_secs.cast_unsigned())
+        } else {
+            SystemTime::now() - Duration::from_secs((-offset_secs).cast_unsigned())
+        };
+        let iat = SystemTime::now() - Duration::from_secs(10);
+        let iss = url::Url::parse("https://issuer.example.com").expect("valid url");
+        let claims = Claims::new(
+            "sub".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            iss,
+            vec![Audience::new("client".to_owned())],
+            iat,
+            exp,
+        );
+        Token::new("raw.jwt.token".to_owned(), claims, None)
+    }
+
+    fn token_with_nbf_offset(offset_secs: i64) -> Token {
+        let exp = SystemTime::now() + Duration::from_secs(3600);
+        let iat = SystemTime::now() - Duration::from_secs(10);
+        let nbf = if offset_secs >= 0 {
+            SystemTime::now() + Duration::from_secs(offset_secs.cast_unsigned())
+        } else {
+            SystemTime::now() - Duration::from_secs((-offset_secs).cast_unsigned())
+        };
+        let iss = url::Url::parse("https://issuer.example.com").expect("valid url");
+        let claims = Claims::new(
+            "sub".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            iss,
+            vec![Audience::new("client".to_owned())],
+            iat,
+            exp,
+        );
+        Token::new("raw.jwt.token".to_owned(), claims, Some(nbf))
+    }
+
+    #[test]
+    fn exp_beyond_leeway_returns_expired() {
+        // Expired 2 minutes ago — beyond the 60s leeway
+        let token = token_with_exp_offset(-120);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        assert!(
+            matches!(result, Err(crate::error::IdTokenError::Expired)),
+            "expected Expired, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn exp_within_leeway_is_accepted() {
+        // Expired 30 seconds ago — within the 60s leeway
+        let token = token_with_exp_offset(-30);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        assert!(
+            result.is_ok(),
+            "expected Ok for token expired within leeway, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn nbf_beyond_leeway_returns_not_yet_valid() {
+        // Not valid for another 2 minutes — beyond the 60s leeway
+        let token = token_with_nbf_offset(120);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        assert!(
+            matches!(result, Err(crate::error::IdTokenError::NotYetValid)),
+            "expected NotYetValid, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn nbf_within_leeway_is_accepted() {
+        // Not valid for another 30 seconds — within the 60s leeway
+        let token = token_with_nbf_offset(30);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        assert!(
+            result.is_ok(),
+            "expected Ok for token with nbf within leeway, got {result:?}"
+        );
     }
 }
