@@ -70,6 +70,9 @@ pub struct Token {
     /// The `nbf` (not before) time, if present in the JWT. Not serialized — re-derived from `raw` on deserialization so it is always consistent with the raw JWT.
     #[serde(skip)]
     nbf: Option<SystemTime>,
+    /// The `nonce` claim, if present in the JWT. Not serialized — re-derived from `raw` on deserialization.
+    #[serde(skip)]
+    nonce: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for Token {
@@ -87,8 +90,18 @@ impl<'de> serde::Deserialize<'de> for Token {
 }
 
 impl Token {
-    pub(crate) const fn new(raw: String, claims: Claims, nbf: Option<SystemTime>) -> Self {
-        Self { raw, claims, nbf }
+    pub(crate) const fn new(
+        raw: String,
+        claims: Claims,
+        nbf: Option<SystemTime>,
+        nonce: Option<String>,
+    ) -> Self {
+        Self {
+            raw,
+            claims,
+            nbf,
+            nonce,
+        }
     }
 
     /// Decode a [`Token`] from a raw JWT string.
@@ -122,6 +135,8 @@ impl Token {
             exp: Option<u64>,
             #[serde(default)]
             nbf: Option<u64>,
+            #[serde(default)]
+            nonce: Option<String>,
         }
 
         let malformed = |msg: String| crate::error::IdTokenError::MalformedIdToken(msg);
@@ -172,7 +187,7 @@ impl Token {
             iat,
             exp,
         );
-        Ok(Self::new(raw.to_string(), claims, nbf))
+        Ok(Self::new(raw.to_string(), claims, nbf, c.nonce))
     }
 
     /// Returns the raw JWT string.
@@ -201,6 +216,8 @@ impl Token {
     /// - `iat` (§4.1.6) — token must not claim to have been issued more than [`CLOCK_SKEW_LEEWAY`] in the future
     /// - `aud` — must be present and must contain `client_id`
     /// - `iss` — must match `issuer` when one is configured
+    /// - `nonce` (OIDC Core §3.1.3.7) — when `expected_nonce` is `Some`, the token's `nonce` claim
+    ///   must be present and equal; when `None`, nonce validation is skipped (e.g., refresh path)
     ///
     /// # Errors
     ///
@@ -209,6 +226,7 @@ impl Token {
         &self,
         client_id: &str,
         issuer: IssuerValidation<'_>,
+        expected_nonce: Option<&str>,
     ) -> Result<(), crate::error::IdTokenError> {
         use crate::error::IdTokenError;
 
@@ -252,6 +270,14 @@ impl Token {
             });
         }
 
+        // OIDC Core §3.1.3.7 — nonce: when expected, token must carry a matching nonce claim
+        if let Some(expected) = expected_nonce {
+            match self.nonce.as_deref() {
+                Some(got) if got == expected => {}
+                _ => return Err(IdTokenError::NonceMismatch),
+            }
+        }
+
         Ok(())
     }
 }
@@ -285,7 +311,7 @@ mod tests {
             iat,
             exp,
         );
-        Token::new("raw.jwt.token".to_owned(), claims, None)
+        Token::new("raw.jwt.token".to_owned(), claims, None, None)
     }
 
     fn token_with_nbf_offset(offset_secs: i64) -> Token {
@@ -308,14 +334,14 @@ mod tests {
             iat,
             exp,
         );
-        Token::new("raw.jwt.token".to_owned(), claims, Some(nbf))
+        Token::new("raw.jwt.token".to_owned(), claims, Some(nbf), None)
     }
 
     #[test]
     fn exp_beyond_leeway_returns_expired() {
         // Expired 2 minutes ago — beyond the 60s leeway
         let token = token_with_exp_offset(-120);
-        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
         assert!(
             matches!(result, Err(crate::error::IdTokenError::Expired)),
             "expected Expired, got {result:?}"
@@ -326,7 +352,7 @@ mod tests {
     fn exp_within_leeway_is_accepted() {
         // Expired 30 seconds ago — within the 60s leeway
         let token = token_with_exp_offset(-30);
-        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
         assert!(
             result.is_ok(),
             "expected Ok for token expired within leeway, got {result:?}"
@@ -337,7 +363,7 @@ mod tests {
     fn nbf_beyond_leeway_returns_not_yet_valid() {
         // Not valid for another 2 minutes — beyond the 60s leeway
         let token = token_with_nbf_offset(120);
-        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
         assert!(
             matches!(result, Err(crate::error::IdTokenError::NotYetValid)),
             "expected NotYetValid, got {result:?}"
@@ -348,7 +374,7 @@ mod tests {
     fn nbf_within_leeway_is_accepted() {
         // Not valid for another 30 seconds — within the 60s leeway
         let token = token_with_nbf_offset(30);
-        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
         assert!(
             result.is_ok(),
             "expected Ok for token with nbf within leeway, got {result:?}"
@@ -374,14 +400,14 @@ mod tests {
             iat,
             exp,
         );
-        Token::new("raw.jwt.token".to_owned(), claims, None)
+        Token::new("raw.jwt.token".to_owned(), claims, None, None)
     }
 
     #[test]
     fn iat_beyond_leeway_in_future_returns_malformed() {
         // Issued 2 minutes in the future — beyond the 60s leeway
         let token = token_with_iat_offset(120);
-        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
         assert!(
             matches!(result, Err(crate::error::IdTokenError::MalformedIdToken(_))),
             "expected MalformedIdToken for future iat, got {result:?}"
@@ -392,10 +418,72 @@ mod tests {
     fn iat_within_leeway_in_future_is_accepted() {
         // Issued 30 seconds in the future — within the 60s leeway
         let token = token_with_iat_offset(30);
-        let result = token.validate_standard_claims("client", IssuerValidation::Skip);
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
         assert!(
             result.is_ok(),
             "expected Ok for token with iat within leeway, got {result:?}"
+        );
+    }
+
+    fn token_with_nonce(nonce: Option<String>) -> Token {
+        let exp = SystemTime::now() + Duration::from_secs(3600);
+        let iat = SystemTime::now() - Duration::from_secs(10);
+        let iss = url::Url::parse("https://issuer.example.com").expect("valid url");
+        let claims = Claims::new(
+            "sub".to_owned(),
+            None,
+            None,
+            None,
+            None,
+            iss,
+            vec![Audience::new("client".to_owned())],
+            iat,
+            exp,
+        );
+        Token::new("raw.jwt.token".to_owned(), claims, None, nonce)
+    }
+
+    #[test]
+    fn matching_nonce_is_accepted() {
+        let token = token_with_nonce(Some("abc123".to_owned()));
+        let result =
+            token.validate_standard_claims("client", IssuerValidation::Skip, Some("abc123"));
+        assert!(
+            result.is_ok(),
+            "expected Ok for matching nonce, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn mismatched_nonce_returns_nonce_mismatch() {
+        let token = token_with_nonce(Some("abc123".to_owned()));
+        let result =
+            token.validate_standard_claims("client", IssuerValidation::Skip, Some("wrong"));
+        assert!(
+            matches!(result, Err(crate::error::IdTokenError::NonceMismatch)),
+            "expected NonceMismatch for wrong nonce, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn absent_nonce_with_expected_returns_nonce_mismatch() {
+        let token = token_with_nonce(None);
+        let result =
+            token.validate_standard_claims("client", IssuerValidation::Skip, Some("abc123"));
+        assert!(
+            matches!(result, Err(crate::error::IdTokenError::NonceMismatch)),
+            "expected NonceMismatch when token has no nonce but one was expected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn no_expected_nonce_skips_nonce_validation() {
+        // Token has a nonce but no expected nonce supplied — skips validation (refresh path)
+        let token = token_with_nonce(Some("any-nonce".to_owned()));
+        let result = token.validate_standard_claims("client", IssuerValidation::Skip, None);
+        assert!(
+            result.is_ok(),
+            "expected Ok when no expected nonce supplied, got {result:?}"
         );
     }
 }

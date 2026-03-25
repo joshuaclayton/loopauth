@@ -314,7 +314,7 @@ mod tests {
             UNIX_EPOCH,
             UNIX_EPOCH,
         );
-        let oidc = oidc::Token::new("raw.jwt.string".to_string(), claims, None);
+        let oidc = oidc::Token::new("raw.jwt.string".to_string(), claims, None, None);
         assert_eq!(oidc.raw(), "raw.jwt.string");
     }
 
@@ -366,7 +366,7 @@ mod tests {
             UNIX_EPOCH,
             UNIX_EPOCH,
         );
-        let oidc = oidc::Token::new("header.payload.sig".to_string(), claims, None);
+        let oidc = oidc::Token::new("header.payload.sig".to_string(), claims, None, None);
         let token = TokenSet::new(
             "access".to_string(),
             None,

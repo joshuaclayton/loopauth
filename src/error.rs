@@ -115,6 +115,9 @@ pub enum IdTokenError {
         /// The issuer found in the `id_token`.
         got: String,
     },
+    /// The `nonce` claim is absent or does not match the value sent in the authorization request.
+    #[error("id_token nonce mismatch")]
+    NonceMismatch,
 }
 
 /// Errors that can occur in [`crate::TokenStore`] implementations.

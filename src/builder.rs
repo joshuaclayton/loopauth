@@ -148,7 +148,13 @@ impl CliTokenClient {
         // 4. Generate state token
         let state_token = uuid::Uuid::new_v4().to_string();
 
-        // 5. Build auth URL with query params
+        // 5. Generate nonce when OIDC is active (OIDC Core §3.1.2.1)
+        let nonce = self
+            .oidc_jwks
+            .is_some()
+            .then(|| uuid::Uuid::new_v4().to_string());
+
+        // 6. Build auth URL with query params
         let mut auth_url = self.auth_url.clone();
         auth_url
             .query_pairs_mut()
@@ -158,6 +164,10 @@ impl CliTokenClient {
             .append_pair("state", &state_token)
             .append_pair("code_challenge", &pkce.code_challenge)
             .append_pair("code_challenge_method", pkce.code_challenge_method);
+
+        if let Some(ref n) = nonce {
+            auth_url.query_pairs_mut().append_pair("nonce", n);
+        }
 
         if !self.scopes.is_empty() {
             let scope_str = self
@@ -169,51 +179,52 @@ impl CliTokenClient {
             auth_url.query_pairs_mut().append_pair("scope", &scope_str);
         }
 
-        // 6. Call on_auth_url hook
+        // 7. Call on_auth_url hook
         if let Some(ref hook) = self.on_auth_url {
             hook(&mut auth_url);
         }
 
-        // 7. Create channels
+        // 8. Create channels
         let (outer_tx, outer_rx) = mpsc::channel::<CallbackResult>(1);
         let (inner_tx, inner_rx) = mpsc::channel::<RenderedHtml>(1);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-        // 8. Build ServerState
+        // 9. Build ServerState
         let server_state = ServerState {
             outer_tx,
             inner_rx: Arc::new(Mutex::new(Some(inner_rx))),
             shutdown_tx: Arc::new(Mutex::new(Some(shutdown_tx))),
         };
 
-        // 9. Spawn callback server
+        // 10. Spawn callback server
         let port = listener.local_addr().map_err(AuthError::ServerBind)?.port();
         let shutdown_arc = Arc::clone(&server_state.shutdown_tx);
         tokio::spawn(run_callback_server(listener, server_state, shutdown_rx));
 
-        // 10. Call on_server_ready hook
+        // 11. Call on_server_ready hook
         if let Some(ref hook) = self.on_server_ready {
             hook(port);
         }
 
-        // 11. Call on_url hook AFTER server is spawned
+        // 12. Call on_url hook AFTER server is spawned
         if let Some(ref hook) = self.on_url {
             hook(&auth_url);
         }
 
-        // 12. Open browser or log URL
+        // 13. Open browser or log URL
         if self.open_browser {
             webbrowser::open(auth_url.as_str()).map_err(|e| AuthError::Browser(e.to_string()))?;
         } else {
             tracing::info!(url = auth_url.as_str(), "authorization URL");
         }
 
-        // 13-17. Wait for callback, exchange code, send HTML response
+        // 14-18. Wait for callback, exchange code, send HTML response
         handle_callback(
             self,
             &redirect_uri_url,
             &state_token,
             &pkce.code_verifier,
+            nonce.as_deref(),
             inner_tx,
             outer_rx,
             shutdown_arc,
@@ -272,6 +283,8 @@ impl CliTokenClient {
                     crate::oidc::IssuerValidation::Skip,
                     crate::oidc::IssuerValidation::MustMatch,
                 ),
+                // Nonce is only validated during the initial authorization flow, not on refresh
+                None,
             )
             .await
             .map_err(RefreshError::IdToken)
@@ -410,7 +423,7 @@ fn validate_callback_code(
 ///
 /// Two-phase validation per RFC 7519 §7.2:
 /// 1. Cryptographic signature check via JWKS (when [`OidcJwksConfig::Enabled`]).
-/// 2. Standard claims: `exp`, `nbf`, `aud`, and optionally `iss`.
+/// 2. Standard claims: `exp`, `nbf`, `aud`, optionally `iss`, and optionally `nonce`.
 ///
 /// Claims are only checked after the signature is verified to prevent accepting
 /// claims from a tampered or unsigned token.
@@ -419,6 +432,7 @@ async fn validate_id_token(
     token_set: crate::token::TokenSet<crate::token::Unvalidated>,
     client_id: &str,
     issuer: crate::oidc::IssuerValidation<'_>,
+    expected_nonce: Option<&str>,
 ) -> Result<crate::token::TokenSet<crate::token::Validated>, crate::error::IdTokenError> {
     use crate::error::IdTokenError;
 
@@ -432,16 +446,21 @@ async fn validate_id_token(
     }
 
     // RFC 7519 §7.2: validate standard claims after signature check
-    oidc.validate_standard_claims(client_id, issuer)?;
+    oidc.validate_standard_claims(client_id, issuer, expected_nonce)?;
 
     Ok(token_set.into_validated())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "private orchestrator function; all args are distinct concerns that cannot be bundled without noise"
+)]
 async fn handle_callback(
     auth: &CliTokenClient,
     redirect_uri_url: &url::Url,
     state_token: &str,
     code_verifier: &str,
+    nonce: Option<&str>,
     inner_tx: mpsc::Sender<RenderedHtml>,
     mut outer_rx: mpsc::Receiver<CallbackResult>,
     shutdown_arc: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -504,6 +523,7 @@ async fn handle_callback(
                 crate::oidc::IssuerValidation::Skip,
                 crate::oidc::IssuerValidation::MustMatch,
             ),
+            nonce,
         )
         .await
         .map_err(AuthError::IdToken)

@@ -26,6 +26,7 @@ const DEFAULT_TOKEN_EXPIRY_SECS: u64 = 3600;
 struct AuthorizeParams {
     redirect_uri: String,
     state: String,
+    nonce: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,6 +247,9 @@ impl FakeOAuthServer {
     }
 
     /// Like `start`, but the /token endpoint includes an `id_token` in the response.
+    ///
+    /// The `nonce` sent in the authorization request is captured and included in the
+    /// returned `id_token`, enabling nonce validation in tests.
     pub async fn start_with_oidc(
         token_value: impl Into<String>,
         id_token_sub: impl Into<String>,
@@ -253,20 +257,41 @@ impl FakeOAuthServer {
         client_id: impl Into<String>,
     ) -> Self {
         let access_token = Arc::new(token_value.into());
-        let id_token = Arc::new(make_fake_id_token(
-            &id_token_sub.into(),
-            &id_token_email.into(),
-            &client_id.into(),
-        ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let state: Arc<(Arc<String>, Arc<String>)> =
-            Arc::new((Arc::clone(&access_token), Arc::clone(&id_token)));
+        // Shared state: nonce is captured from the authorize request and read by token handler
+        let nonce_store: Arc<tokio::sync::Mutex<Option<String>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+
+        let oidc_state = Arc::new(OidcTokenState {
+            access_token: Arc::clone(&access_token),
+            sub: id_token_sub.into(),
+            email: id_token_email.into(),
+            client_id: client_id.into(),
+            nonce: Arc::clone(&nonce_store),
+        });
+
+        let nonce_store_clone = Arc::clone(&nonce_store);
         let app = Router::new()
-            .route("/authorize", get(authorize_handler))
+            .route(
+                "/authorize",
+                get(move |Query(params): Query<AuthorizeParams>| {
+                    let nonce_store = Arc::clone(&nonce_store_clone);
+                    async move {
+                        // Capture nonce from authorize request for use during token exchange;
+                        // drop guard before constructing the redirect to minimize lock scope
+                        *nonce_store.lock().await = params.nonce;
+                        let redirect_url = format!(
+                            "{}?code=fake_code&state={}",
+                            params.redirect_uri, params.state
+                        );
+                        Redirect::temporary(&redirect_url)
+                    }
+                }),
+            )
             .route("/token", post(oidc_token_handler))
-            .with_state(Arc::clone(&state));
+            .with_state(Arc::clone(&oidc_state));
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -423,28 +448,46 @@ async fn refresh_token_handler(
     }))
 }
 
-/// Build a minimal fake JWT string (unsigned) with the given `sub`, `email`, and `client_id` claims.
-pub fn make_fake_id_token(sub: &str, email: &str, client_id: &str) -> String {
+/// Shared state for the OIDC fake token endpoint.
+struct OidcTokenState {
+    access_token: Arc<String>,
+    sub: String,
+    email: String,
+    client_id: String,
+    /// Nonce captured from the authorize request; included in the `id_token` when present.
+    nonce: Arc<tokio::sync::Mutex<Option<String>>>,
+}
+
+/// Build a minimal fake JWT string (unsigned) with the given claims.
+///
+/// When `nonce` is `Some`, it is included as the `nonce` claim so that nonce
+/// validation can be exercised in tests.
+pub fn make_fake_id_token(sub: &str, email: &str, client_id: &str, nonce: Option<&str>) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+    let nonce_field = nonce
+        .map(|n| format!(r#","nonce":"{n}""#))
+        .unwrap_or_default();
     let claims = URL_SAFE_NO_PAD.encode(format!(
-        r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","aud":["{client_id}"],"iat":1000000000,"exp":9999999999}}"#
+        r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","aud":["{client_id}"],"iat":1000000000,"exp":9999999999{nonce_field}}}"#
     ));
     format!("{header}.{claims}.fakesig")
 }
 
 async fn oidc_token_handler(
-    State(state): State<Arc<(Arc<String>, Arc<String>)>>,
+    State(state): State<Arc<OidcTokenState>>,
     Form(body): Form<HashMap<String, String>>,
 ) -> Result<Json<FakeTokenResponse>, StatusCode> {
     match body.get("code_verifier") {
         Some(cv) if !cv.is_empty() => {}
         _ => return Err(StatusCode::BAD_REQUEST),
     }
+    let nonce = state.nonce.lock().await.clone();
+    let id_token = make_fake_id_token(&state.sub, &state.email, &state.client_id, nonce.as_deref());
     Ok(Json(FakeTokenResponse {
-        access_token: state.0.as_ref().clone(),
+        access_token: state.access_token.as_ref().clone(),
         token_type: "Bearer".to_string(),
         expires_in: DEFAULT_TOKEN_EXPIRY_SECS,
         refresh_token: None,
-        id_token: Some(state.1.as_ref().clone()),
+        id_token: Some(id_token),
     }))
 }
