@@ -29,6 +29,7 @@ let open_id_configuration = OpenIdConfiguration::fetch(
 // from_open_id_configuration automatically includes the openid scope
 let client = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
     .client_id("my-client-id")
+    .with_open_id_configuration_jwks_validator(&open_id_configuration)
     .extend_scopes([OAuth2Scope::Email])
     .build();
 
@@ -46,6 +47,7 @@ let client = CliTokenClient::builder()
     .auth_url(Url::parse("https://provider.example.com/authorize")?)
     .token_url(Url::parse("https://provider.example.com/token")?)
     .with_openid_scope()
+    .jwks_validator(Box::new(my_validator)) // or .without_jwks_validation()
     .extend_scopes([OAuth2Scope::Email])
     .build();
 

@@ -1,6 +1,21 @@
 use crate::error::{AuthError, CallbackError, RefreshError};
 use crate::jwks::{JwksValidator, JwksValidatorStorage, RemoteJwksValidator};
 use crate::oidc::OpenIdConfiguration;
+
+/// Whether JWKS signature verification is performed on received ID tokens.
+///
+/// Constructed by the builder type-state; never constructed directly.
+#[non_exhaustive]
+pub enum OidcJwksConfig {
+    /// Verify the ID token signature against the provider's JWKS endpoint.
+    Enabled(JwksValidatorStorage),
+    /// Skip JWKS signature verification.
+    ///
+    /// Claims (`exp`, `nbf`, `aud`, `iss`) are still validated. Use only when
+    /// you have an out-of-band trust anchor (e.g., a mTLS-secured private network
+    /// or a test environment where real JWKS validation is not possible).
+    Disabled,
+}
 use crate::pages::{
     ErrorPageRenderer, ErrorRendererStorage, OAuth2Scope, SuccessPageRenderer,
     SuccessRendererStorage,
@@ -52,7 +67,7 @@ pub struct CliTokenClient {
     on_auth_url: Option<OnAuthUrlCallback>,
     on_url: Option<OnUrlCallback>,
     on_server_ready: Option<OnServerReadyCallback>,
-    jwks_validator: Option<JwksValidatorStorage>,
+    oidc_jwks: Option<OidcJwksConfig>,
 }
 
 impl CliTokenClient {
@@ -248,9 +263,9 @@ impl CliTokenClient {
             &self.scopes,
         )
         .await?;
-        if self.scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
+        if let Some(oidc_jwks) = &self.oidc_jwks {
             validate_jwks(
-                self.jwks_validator.as_ref(),
+                oidc_jwks,
                 unvalidated,
                 self.client_id.as_str(),
                 self.issuer.as_ref().map_or(
@@ -388,13 +403,13 @@ fn validate_callback_code(
 /// Validate an ID token and promote the token set to the [`crate::token::Validated`] state.
 ///
 /// Two-phase validation per RFC 7519 §7.2:
-/// 1. Cryptographic signature check via JWKS (when a validator is configured).
+/// 1. Cryptographic signature check via JWKS (when [`OidcJwksConfig::Enabled`]).
 /// 2. Standard claims: `exp`, `nbf`, `aud`, and optionally `iss`.
 ///
 /// Claims are only checked after the signature is verified to prevent accepting
 /// claims from a tampered or unsigned token.
 async fn validate_jwks(
-    validator: Option<&crate::jwks::JwksValidatorStorage>,
+    oidc_jwks: &OidcJwksConfig,
     token_set: crate::token::TokenSet<crate::token::Unvalidated>,
     client_id: &str,
     issuer: crate::oidc::IssuerValidation<'_>,
@@ -403,7 +418,7 @@ async fn validate_jwks(
 
     let oidc = token_set.oidc_token().ok_or(IdTokenError::NoIdToken)?;
 
-    if let Some(validator) = validator {
+    if let OidcJwksConfig::Enabled(validator) = oidc_jwks {
         validator
             .validate(oidc.raw())
             .await
@@ -473,10 +488,10 @@ async fn handle_callback(
         }
     };
 
-    // Run JWKS validation when openid scope was requested; otherwise promote directly
-    let token_set = if auth.scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
+    // Run JWKS validation when OIDC is configured; otherwise promote directly
+    let token_set = if let Some(oidc_jwks) = &auth.oidc_jwks {
         match validate_jwks(
-            auth.jwks_validator.as_ref(),
+            oidc_jwks,
             token_set,
             auth.client_id.as_str(),
             auth.issuer.as_ref().map_or(
@@ -694,13 +709,15 @@ async fn exchange_refresh_token(
 //   A — auth_url    (NoAuthUrl  | HasAuthUrl)
 //   T — token_url   (NoTokenUrl | HasTokenUrl)
 //
-// One parameter tracks OIDC mode:
-//   O — oidc        (NoOidc | HasOidc)
+// One parameter tracks OIDC + JWKS state:
+//   O — oidc        (NoOidc | OidcPending | JwksEnabled | JwksDisabled)
 //
-// OIDC mode is entered explicitly via `with_openid_scope()`, or implicitly by
-// `from_open_id_configuration()`. JWKS validator methods are only available in
-// `HasOidc` state, eliminating the "jwks_validator requires OpenId scope" and
-// "from_open_id_configuration requires OpenId scope" runtime checks entirely.
+// OIDC mode is entered via `with_openid_scope()` or `from_open_id_configuration()`,
+// which transitions to `OidcPending`. From `OidcPending`, callers must resolve JWKS
+// by calling either `jwks_validator()` (→ `JwksEnabled`) or `without_jwks_validation()`
+// (→ `JwksDisabled`) before `build()` becomes available. This ensures that opting out
+// of signature verification is always an explicit, visible choice rather than a silent
+// default.
 
 /// Type-state: `client_id` not yet provided.
 #[non_exhaustive]
@@ -723,10 +740,22 @@ pub struct HasTokenUrl(url::Url);
 /// Type-state: OIDC mode not yet engaged; `openid` scope is not included.
 #[non_exhaustive]
 pub struct NoOidc;
-/// Type-state: OIDC mode engaged; `openid` scope is included and JWKS validator
-/// methods are available.
+/// Type-state: OIDC mode engaged but JWKS decision not yet made.
+///
+/// Call [`CliTokenClientBuilder::jwks_validator`] to enable signature verification
+/// or [`CliTokenClientBuilder::without_jwks_validation`] to explicitly opt out.
+/// `build()` is not available in this state.
 #[non_exhaustive]
-pub struct HasOidc;
+pub struct OidcPending;
+/// Type-state: OIDC mode engaged with JWKS signature verification enabled.
+///
+/// `build()` is available.
+pub struct JwksEnabled(JwksValidatorStorage);
+/// Type-state: OIDC mode engaged with JWKS signature verification explicitly disabled.
+///
+/// Claims (`exp`, `nbf`, `aud`, `iss`) are still validated. `build()` is available.
+#[non_exhaustive]
+pub struct JwksDisabled;
 
 // All optional builder fields live in a private inner struct. This means the
 // state-transition methods (`client_id`, `auth_url`, `token_url`,
@@ -747,7 +776,6 @@ struct BuilderConfig {
     on_auth_url: Option<OnAuthUrlCallback>,
     on_url: Option<OnUrlCallback>,
     on_server_ready: Option<OnServerReadyCallback>,
-    jwks_validator: Option<JwksValidatorStorage>,
 }
 
 impl Default for BuilderConfig {
@@ -766,7 +794,6 @@ impl Default for BuilderConfig {
             on_url: None,
             on_server_ready: None,
             issuer: None,
-            jwks_validator: None,
         }
     }
 }
@@ -815,6 +842,7 @@ impl Default for BuilderConfig {
 ///     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
 ///     .token_url(url::Url::parse("https://provider.example.com/token")?)
 ///     .with_openid_scope()
+///     .without_jwks_validation() // or .jwks_validator(Box::new(my_validator))
 ///     .extend_scopes([OAuth2Scope::Email, OAuth2Scope::OfflineAccess])
 ///     .on_auth_url(|url| {
 ///         url.query_pairs_mut().append_pair("access_type", "offline");
@@ -830,7 +858,7 @@ pub struct CliTokenClientBuilder<C = NoClientId, A = NoAuthUrl, T = NoTokenUrl, 
     client_id: C,
     auth_url: A,
     token_url: T,
-    _oidc: std::marker::PhantomData<O>,
+    oidc: O,
     config: BuilderConfig,
 }
 
@@ -840,14 +868,14 @@ impl Default for CliTokenClientBuilder {
             client_id: NoClientId,
             auth_url: NoAuthUrl,
             token_url: NoTokenUrl,
-            _oidc: std::marker::PhantomData,
+            oidc: NoOidc,
             config: BuilderConfig::default(),
         }
     }
 }
 
 // Named constructor — pre-fills both URLs from an OIDC discovery document and
-// enters HasOidc mode (adding `openid` to scopes). Placed on the default
+// enters OidcPending mode (adding `openid` to scopes). Placed on the default
 // (all-unset) state so `CliTokenClientBuilder::from_open_id_configuration`
 // remains the natural call site.
 impl CliTokenClientBuilder {
@@ -862,12 +890,12 @@ impl CliTokenClientBuilder {
     #[must_use]
     pub fn from_open_id_configuration(
         open_id_configuration: &OpenIdConfiguration,
-    ) -> CliTokenClientBuilder<NoClientId, HasAuthUrl, HasTokenUrl, HasOidc> {
+    ) -> CliTokenClientBuilder<NoClientId, HasAuthUrl, HasTokenUrl, OidcPending> {
         CliTokenClientBuilder {
             client_id: NoClientId,
             auth_url: HasAuthUrl(open_id_configuration.authorization_endpoint().clone()),
             token_url: HasTokenUrl(open_id_configuration.token_endpoint().clone()),
-            _oidc: std::marker::PhantomData,
+            oidc: OidcPending,
             config: BuilderConfig {
                 issuer: Some(open_id_configuration.issuer().clone()),
                 scopes: std::collections::BTreeSet::from([OAuth2Scope::OpenId]),
@@ -887,7 +915,7 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
             client_id: HasClientId(ClientId(v.into())),
             auth_url: self.auth_url,
             token_url: self.token_url,
-            _oidc: std::marker::PhantomData,
+            oidc: self.oidc,
             config: self.config,
         }
     }
@@ -910,7 +938,7 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
             client_id: self.client_id,
             auth_url: HasAuthUrl(v),
             token_url: self.token_url,
-            _oidc: std::marker::PhantomData,
+            oidc: self.oidc,
             config: self.config,
         }
     }
@@ -922,7 +950,7 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
             client_id: self.client_id,
             auth_url: self.auth_url,
             token_url: HasTokenUrl(v),
-            _oidc: std::marker::PhantomData,
+            oidc: self.oidc,
             config: self.config,
         }
     }
@@ -1065,66 +1093,109 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
 impl<C, A, T> CliTokenClientBuilder<C, A, T, NoOidc> {
     /// Add `openid` to the requested scopes and enter OIDC mode.
     ///
-    /// Once in OIDC mode, JWKS validator methods become available and the
-    /// `openid` scope is guaranteed to be included in the token request.
+    /// Transitions to [`OidcPending`] — you must then call either
+    /// [`jwks_validator`] (to enable JWKS signature verification) or
+    /// [`without_jwks_validation`] (to explicitly opt out) before [`build`]
+    /// becomes available.
     ///
     /// Note: [`from_open_id_configuration`] implicitly enters OIDC mode, so
     /// this method is not needed when using that constructor.
     ///
+    /// [`jwks_validator`]: CliTokenClientBuilder::jwks_validator
+    /// [`without_jwks_validation`]: CliTokenClientBuilder::without_jwks_validation
+    /// [`build`]: CliTokenClientBuilder::build
     /// [`from_open_id_configuration`]: CliTokenClientBuilder::from_open_id_configuration
     #[must_use]
-    pub fn with_openid_scope(mut self) -> CliTokenClientBuilder<C, A, T, HasOidc> {
+    pub fn with_openid_scope(mut self) -> CliTokenClientBuilder<C, A, T, OidcPending> {
         self.config.scopes.insert(OAuth2Scope::OpenId);
         CliTokenClientBuilder {
             client_id: self.client_id,
             auth_url: self.auth_url,
             token_url: self.token_url,
-            _oidc: std::marker::PhantomData,
+            oidc: OidcPending,
             config: self.config,
         }
     }
 }
 
-// ── OIDC-only methods ─────────────────────────────────────────────────────────
+// ── OIDC pending → resolved ───────────────────────────────────────────────────
 
-impl<C, A, T> CliTokenClientBuilder<C, A, T, HasOidc> {
-    /// Register an optional JWKS validator callback. When set, the raw `id_token`
-    /// string is passed to [`JwksValidator::validate`] after a successful token
-    /// exchange. If validation fails, [`CliTokenClient::run_authorization_flow`]
-    /// returns [`AuthError::IdToken`] wrapping an [`crate::IdTokenError::JwksValidationFailed`].
+impl<C, A, T> CliTokenClientBuilder<C, A, T, OidcPending> {
+    /// Enable JWKS signature verification and transition to [`JwksEnabled`].
+    ///
+    /// The raw `id_token` string is passed to [`JwksValidator::validate`] after
+    /// every successful token exchange. If validation fails,
+    /// [`CliTokenClient::run_authorization_flow`] returns
+    /// [`AuthError::IdToken`] wrapping [`crate::IdTokenError::JwksValidationFailed`].
     #[must_use]
-    pub fn jwks_validator(mut self, v: Box<dyn JwksValidator>) -> Self {
-        self.config.jwks_validator = Some(v);
-        self
+    pub fn jwks_validator(
+        self,
+        v: Box<dyn JwksValidator>,
+    ) -> CliTokenClientBuilder<C, A, T, JwksEnabled> {
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            oidc: JwksEnabled(v),
+            config: self.config,
+        }
+    }
+
+    /// Explicitly opt out of JWKS signature verification and transition to [`JwksDisabled`].
+    ///
+    /// Claims (`exp`, `nbf`, `aud`, `iss`) are still validated per RFC 7519.
+    /// Only the cryptographic signature check is skipped.
+    ///
+    /// Use only when you have an out-of-band trust anchor (e.g., a mTLS-secured
+    /// private network or a test environment where real JWKS validation is not
+    /// possible). In all other cases, prefer [`jwks_validator`].
+    ///
+    /// [`jwks_validator`]: CliTokenClientBuilder::jwks_validator
+    #[must_use]
+    pub fn without_jwks_validation(self) -> CliTokenClientBuilder<C, A, T, JwksDisabled> {
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            oidc: JwksDisabled,
+            config: self.config,
+        }
     }
 }
 
-impl<A, T> CliTokenClientBuilder<HasClientId, A, T, HasOidc> {
-    /// Set the JWKS validator from an [`OpenIdConfiguration`].
+impl<A, T> CliTokenClientBuilder<HasClientId, A, T, OidcPending> {
+    /// Configure JWKS validation from an [`OpenIdConfiguration`] and transition
+    /// to [`JwksEnabled`].
     ///
     /// Uses `open_id_configuration.jwks_uri()` and the `client_id` already set
     /// on this builder as the expected audience. Requires both `client_id` and
     /// OIDC mode to be set first — enforced at compile time.
     #[must_use]
     pub fn with_open_id_configuration_jwks_validator(
-        mut self,
+        self,
         open_id_configuration: &OpenIdConfiguration,
-    ) -> Self {
+    ) -> CliTokenClientBuilder<HasClientId, A, T, JwksEnabled> {
         let client_id = self.client_id.0.as_str().to_owned();
-        self.config.jwks_validator = Some(Box::new(
-            RemoteJwksValidator::from_open_id_configuration(open_id_configuration, client_id),
+        let validator = Box::new(RemoteJwksValidator::from_open_id_configuration(
+            open_id_configuration,
+            client_id,
         ));
-        self
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            oidc: JwksEnabled(validator),
+            config: self.config,
+        }
     }
 }
 
-impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, HasOidc> {
+impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksEnabled> {
     /// Build a [`CliTokenClient`] from the configured builder.
     ///
     /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
-    /// at compile time. This method is infallible. The `openid` scope is
-    /// guaranteed to be present in the built client regardless of any prior
-    /// scope operations.
+    /// at compile time. This method is infallible. JWKS signature verification
+    /// is enabled; ID tokens will have their signatures verified on every exchange.
     #[must_use]
     pub fn build(mut self) -> CliTokenClient {
         self.config.scopes.insert(OAuth2Scope::OpenId);
@@ -1133,6 +1204,26 @@ impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, HasOidc> {
             self.auth_url.0,
             self.token_url.0,
             self.config,
+            Some(OidcJwksConfig::Enabled(self.oidc.0)),
+        )
+    }
+}
+
+impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksDisabled> {
+    /// Build a [`CliTokenClient`] from the configured builder.
+    ///
+    /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
+    /// at compile time. This method is infallible. JWKS signature verification
+    /// is disabled; claims are still validated per RFC 7519.
+    #[must_use]
+    pub fn build(mut self) -> CliTokenClient {
+        self.config.scopes.insert(OAuth2Scope::OpenId);
+        build_client(
+            self.client_id.0,
+            self.auth_url.0,
+            self.token_url.0,
+            self.config,
+            Some(OidcJwksConfig::Disabled),
         )
     }
 }
@@ -1149,6 +1240,7 @@ impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, NoOidc> {
             self.auth_url.0,
             self.token_url.0,
             self.config,
+            None,
         )
     }
 }
@@ -1158,6 +1250,7 @@ fn build_client(
     auth_url: url::Url,
     token_url: url::Url,
     config: BuilderConfig,
+    oidc_jwks: Option<OidcJwksConfig>,
 ) -> CliTokenClient {
     CliTokenClient {
         client_id,
@@ -1176,7 +1269,7 @@ fn build_client(
         on_auth_url: config.on_auth_url,
         on_url: config.on_url,
         on_server_ready: config.on_server_ready,
-        jwks_validator: config.jwks_validator,
+        oidc_jwks,
     }
 }
 
@@ -1369,16 +1462,17 @@ mod tests {
     }
 
     // NOTE: from_open_id_configuration_without_openid_scope_fails_build is
-    // intentionally absent — from_open_id_configuration() always returns a
-    // HasOidc builder, so a NoOidc build is impossible to construct.
+    // intentionally absent — from_open_id_configuration() always returns an
+    // OidcPending builder, so a NoOidc build is impossible to construct.
 
     #[test]
     fn from_open_id_configuration_always_includes_openid_scope() {
         let config = make_open_id_configuration();
-        // from_open_id_configuration enters HasOidc mode and pre-populates
+        // from_open_id_configuration enters OidcPending mode and pre-populates
         // the openid scope; no explicit scope call needed.
         let _client = CliTokenClientBuilder::from_open_id_configuration(&config)
             .client_id("test-client")
+            .without_jwks_validation()
             .build();
     }
 }

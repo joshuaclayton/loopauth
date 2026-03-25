@@ -69,9 +69,10 @@ async fn from_open_id_configuration_prefills_auth_and_token_urls() {
         .await
         .unwrap();
     // from_open_id_configuration pre-fills auth_url and token_url and automatically
-    // includes the openid scope — build succeeds with client_id alone.
+    // includes the openid scope — JWKS decision required before build.
     let _client = CliTokenClientBuilder::from_open_id_configuration(&config)
         .client_id("test-client")
+        .without_jwks_validation()
         .build();
 }
 
@@ -84,10 +85,11 @@ async fn from_open_id_configuration_build_always_includes_openid_scope() {
     let config = OpenIdConfiguration::fetch(server.issuer_url())
         .await
         .unwrap();
-    // from_open_id_configuration enters HasOidc mode automatically — no
-    // explicit scope call needed, and omitting it is no longer a build error.
+    // from_open_id_configuration enters OidcPending mode automatically — no
+    // explicit scope call needed, but JWKS decision is required before build.
     let _client = CliTokenClientBuilder::from_open_id_configuration(&config)
         .client_id("test-client")
+        .without_jwks_validation()
         .build();
 }
 
