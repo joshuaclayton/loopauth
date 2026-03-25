@@ -390,8 +390,14 @@ fn validate_callback_code(
     callback_result: CallbackResult,
     state_token: &str,
 ) -> Result<String, CallbackError> {
+    use subtle::ConstantTimeEq as _;
+
     match callback_result {
-        CallbackResult::Success { code, state } if state == state_token => Ok(code),
+        CallbackResult::Success { code, state }
+            if state.as_bytes().ct_eq(state_token.as_bytes()).into() =>
+        {
+            Ok(code)
+        }
         CallbackResult::Success { .. } => Err(CallbackError::StateMismatch),
         CallbackResult::ProviderError { error, description } => Err(CallbackError::ProviderError {
             error,
