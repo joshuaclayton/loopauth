@@ -3,7 +3,7 @@ mod refresh_token;
 mod validation_state;
 
 use crate::oidc;
-use crate::pages::OAuth2Scope;
+use crate::scope::OAuth2Scope;
 pub use access_token::AccessToken;
 pub use refresh_token::RefreshToken;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -52,7 +52,7 @@ where
 /// # Example
 ///
 /// ```
-/// use loopauth::TokenSet;
+/// use loopauth::{TokenSet, Unvalidated};
 ///
 /// let json = r#"{
 ///   "access_token": "tok123",
@@ -62,7 +62,7 @@ where
 ///   "oidc": null,
 ///   "scopes": ["openid", "email"]
 /// }"#;
-/// let tokens: TokenSet = serde_json::from_str(json).unwrap();
+/// let tokens: TokenSet<Unvalidated> = serde_json::from_str(json).unwrap();
 ///
 /// assert_eq!(tokens.access_token().as_str(), "tok123");
 /// assert_eq!(tokens.refresh_token().unwrap().as_str(), "ref456");
@@ -70,8 +70,7 @@ where
 /// assert_eq!(tokens.scopes().len(), 2);
 /// assert!(!tokens.is_expired());
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "")]
+#[derive(Debug, Clone, Serialize)]
 pub struct TokenSet<S: ValidationState = Validated> {
     access_token: AccessToken,
     refresh_token: Option<RefreshToken>,
@@ -87,6 +86,36 @@ pub struct TokenSet<S: ValidationState = Validated> {
     scopes: Vec<OAuth2Scope>,
     #[serde(skip)]
     _state: std::marker::PhantomData<S>,
+}
+
+impl<'de> Deserialize<'de> for TokenSet<Unvalidated> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            access_token: AccessToken,
+            refresh_token: Option<RefreshToken>,
+            #[serde(default, deserialize_with = "deserialize_optional_system_time")]
+            expires_at: Option<SystemTime>,
+            token_type: String,
+            oidc: Option<oidc::Token>,
+            #[serde(default)]
+            scopes: Vec<OAuth2Scope>,
+        }
+
+        let h = Helper::deserialize(deserializer)?;
+        Ok(Self {
+            access_token: h.access_token,
+            refresh_token: h.refresh_token,
+            expires_at: h.expires_at,
+            token_type: h.token_type,
+            oidc: h.oidc,
+            scopes: h.scopes,
+            _state: std::marker::PhantomData,
+        })
+    }
 }
 
 impl<S: ValidationState> TokenSet<S> {
@@ -173,7 +202,13 @@ impl TokenSet<Unvalidated> {
         }
     }
 
-    pub(crate) fn into_validated(self) -> TokenSet<Validated> {
+    /// Convert an unvalidated token set to a validated one.
+    ///
+    /// Callers that deserialize a stored [`TokenSet`] from JSON will receive a
+    /// `TokenSet<Unvalidated>`. Call this to opt into the `Validated` state so
+    /// that OIDC methods such as [`TokenSet::oidc`] are available.
+    #[must_use]
+    pub fn into_validated(self) -> TokenSet<Validated> {
         TokenSet {
             access_token: self.access_token,
             refresh_token: self.refresh_token,
@@ -231,9 +266,9 @@ mod tests {
         clippy::expect_used,
         reason = "tests do not need to meet production lint standards"
     )]
-    use super::{AccessToken, RefreshToken, TokenSet, Validated};
+    use super::{AccessToken, RefreshToken, TokenSet, Unvalidated, Validated};
     use crate::oidc;
-    use crate::pages::OAuth2Scope;
+    use crate::scope::OAuth2Scope;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn make_token_set_expiring_at(expires_at: SystemTime) -> TokenSet<Validated> {
@@ -282,7 +317,7 @@ mod tests {
     fn token_set_serde_roundtrip_access_token() {
         let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
         let json = serde_json::to_string(&token).expect("serialize");
-        let decoded: TokenSet = serde_json::from_str(&json).expect("deserialize");
+        let decoded: TokenSet<Unvalidated> = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded.access_token().as_str(), "access_token_value");
     }
 
@@ -413,7 +448,7 @@ mod tests {
         // RFC 6749 §5.1 scope fallback: when scopes field absent from JSON,
         // it deserializes as empty (serde(default)) - documents getter behavior
         let json = r#"{"access_token":"tok","refresh_token":null,"expires_at":9999999999,"token_type":"Bearer","oidc":null}"#;
-        let token: TokenSet = serde_json::from_str(json).expect("deserialize");
+        let token: TokenSet<Unvalidated> = serde_json::from_str(json).expect("deserialize");
         assert_eq!(token.scopes(), &[] as &[OAuth2Scope]);
     }
 

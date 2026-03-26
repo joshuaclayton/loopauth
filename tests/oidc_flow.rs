@@ -3,7 +3,7 @@
     reason = "tests do not need to meet production lint standards"
 )]
 use loopauth::{
-    AuthError, CliTokenClient, IdTokenError, OAuth2Scope, test_support::FakeOAuthServer,
+    AuthError, CliTokenClient, IdTokenError, RequestScope, test_support::FakeOAuthServer,
 };
 
 #[tokio::test]
@@ -38,7 +38,7 @@ async fn oidc_round_trip_with_openid_scope_populates_claims() {
         .token_url(fake.token_url())
         .with_openid_scope()
         .without_jwks_validation()
-        .add_scopes([OAuth2Scope::Email])
+        .add_scopes([RequestScope::Email])
         .open_browser(false)
         .on_url(move |url| {
             let _ = url_tx.send(url.to_string());

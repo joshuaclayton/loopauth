@@ -31,6 +31,9 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 webbrowser = "1"
 
+[features]
+testing = []
+
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

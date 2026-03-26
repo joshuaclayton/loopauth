@@ -43,7 +43,7 @@
 //! Note: Google's token endpoint requires `LOOPAUTH_CLIENT_SECRET` even for desktop app
 //! credentials - include the value from your credentials JSON.
 
-use loopauth::{CliTokenClientBuilder, OAuth2Scope, oidc::OpenIdConfiguration};
+use loopauth::{CliTokenClientBuilder, RequestScope, oidc::OpenIdConfiguration};
 use url::Url;
 
 const DEFAULT_SCOPES: &str = "openid,email,profile";
@@ -66,14 +66,14 @@ async fn main() {
     });
 
     let client_secret = std::env::var("LOOPAUTH_CLIENT_SECRET").ok();
-    let scopes = parse_scopes(
-        &std::env::var("LOOPAUTH_SCOPES").unwrap_or_else(|_| DEFAULT_SCOPES.to_string()),
-    );
+    let raw_scopes =
+        std::env::var("LOOPAUTH_SCOPES").unwrap_or_else(|_| DEFAULT_SCOPES.to_string());
+    let scopes = parse_scopes(&raw_scopes);
     let port_hint = std::env::var("LOOPAUTH_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok());
 
-    if !scopes.contains(&OAuth2Scope::OpenId) {
+    if !raw_scopes.split(',').map(str::trim).any(|s| s == "openid") {
         tracing::error!("LOOPAUTH_SCOPES must include 'openid'");
         std::process::exit(FAILURE_EXIT_CODE);
     }
@@ -144,10 +144,10 @@ fn require_env(name: &str) -> String {
     })
 }
 
-fn parse_scopes(s: &str) -> Vec<OAuth2Scope> {
+fn parse_scopes(s: &str) -> Vec<RequestScope> {
     s.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(OAuth2Scope::from)
+        .map(RequestScope::from)
         .collect()
 }

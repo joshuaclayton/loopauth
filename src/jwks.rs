@@ -34,6 +34,11 @@ impl JwksValidationError {
 /// verification on the `id_token`. Register the implementation via
 /// [`crate::CliTokenClientBuilder::jwks_validator`].
 ///
+/// **Scope**: this validator is responsible for cryptographic signature
+/// verification only. After `validate` returns `Ok(())`, the library
+/// separately validates the standard JWT claims (`exp`, `nbf`, `iat`, `aud`,
+/// `iss`, and `nonce`). Do not re-validate those claims here.
+///
 /// # Example
 ///
 /// ```no_run
@@ -172,7 +177,7 @@ fn jwk_key_description(key: &JwkKey) -> String {
     match key {
         JwkKey::RsaWithKid { .. } => "RSA(with-kid)".to_owned(),
         JwkKey::Rsa { .. } => "RSA".to_owned(),
-        JwkKey::EcWithKid { crv, .. } => format!("EC(P-{crv},with-kid)"),
+        JwkKey::EcWithKid { crv, .. } => format!("EC({crv},with-kid)"),
         JwkKey::Ec { crv, .. } => format!("EC({crv})"),
         JwkKey::Unsupported { kty, crv } => crv
             .as_ref()
@@ -184,6 +189,10 @@ fn jwk_key_description(key: &JwkKey) -> String {
 ///
 /// Fetches the JWKS on every call. Supports RSA (RS256/384/512, PS256/384/512)
 /// and EC (ES256/384) algorithms. Algorithm is read from the JWT header `alg` field.
+///
+/// **Availability**: if the JWKS endpoint is unreachable, every token exchange
+/// fails with a [`crate::IdTokenError::JwksValidationFailed`] error. Ensure the
+/// endpoint is reachable before using this validator in production.
 ///
 /// Construct via [`RemoteJwksValidator::new`].
 pub struct RemoteJwksValidator {

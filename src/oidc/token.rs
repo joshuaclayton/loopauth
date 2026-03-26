@@ -31,7 +31,7 @@ pub enum IssuerValidation<'a> {
 /// # Example
 ///
 /// ```
-/// use loopauth::TokenSet;
+/// use loopauth::{TokenSet, Unvalidated};
 ///
 /// // A TokenSet with an embedded OIDC token (decoded from the id_token JWT).
 /// // The `claims` field is informational; only `raw` is used during deserialization.
@@ -59,7 +59,8 @@ pub enum IssuerValidation<'a> {
 ///   }},
 ///   "scopes": ["openid"]
 /// }}"#);
-/// let tokens: TokenSet = serde_json::from_str(&json).unwrap();
+/// let tokens: TokenSet<Unvalidated> = serde_json::from_str(&json).unwrap();
+/// let tokens = tokens.into_validated();
 /// let oidc = tokens.oidc().unwrap();
 /// assert_eq!(oidc.claims().sub().as_str(), "user123");
 /// ```

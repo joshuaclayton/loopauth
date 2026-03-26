@@ -54,7 +54,7 @@
 //! ```
 //! Add `http://127.0.0.1` (any port) as a callback URL in your GitHub OAuth app.
 
-use loopauth::{CliTokenClient, OAuth2Scope};
+use loopauth::{CliTokenClient, RequestScope};
 
 const DEFAULT_SCOPES: &str = "openid,email,profile";
 const FAILURE_EXIT_CODE: i32 = 1;
@@ -142,10 +142,10 @@ fn require_env(name: &str) -> String {
     })
 }
 
-fn parse_scopes(s: &str) -> Vec<OAuth2Scope> {
+fn parse_scopes(s: &str) -> Vec<RequestScope> {
     s.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(OAuth2Scope::from)
+        .map(RequestScope::from)
         .collect()
 }

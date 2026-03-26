@@ -185,10 +185,14 @@ impl Claims {
         self.exp
     }
 
-    /// Returns `true` if the ID token has expired (`exp` is in the past).
+    /// Returns `true` if the ID token's `exp` claim is more than 60 seconds in the past.
+    ///
+    /// A 60-second clock-skew window is applied to match the tolerance used during
+    /// ID token validation. Tokens that expired less than 60 seconds ago are still
+    /// considered valid.
     #[must_use]
     pub fn is_expired(&self) -> bool {
-        SystemTime::now() >= self.exp
+        SystemTime::now() > self.exp + std::time::Duration::from_secs(60)
     }
 }
 

@@ -269,6 +269,7 @@ impl FakeOAuthServer {
             sub: id_token_sub.into(),
             email: id_token_email.into(),
             client_id: client_id.into(),
+            iss: format!("http://127.0.0.1:{port}"),
             nonce: Arc::clone(&nonce_store),
         });
 
@@ -454,6 +455,8 @@ struct OidcTokenState {
     sub: String,
     email: String,
     client_id: String,
+    /// Issuer URL used in the `iss` claim of the `id_token`.
+    iss: String,
     /// Nonce captured from the authorize request; included in the `id_token` when present.
     nonce: Arc<tokio::sync::Mutex<Option<String>>>,
 }
@@ -462,13 +465,19 @@ struct OidcTokenState {
 ///
 /// When `nonce` is `Some`, it is included as the `nonce` claim so that nonce
 /// validation can be exercised in tests.
-pub fn make_fake_id_token(sub: &str, email: &str, client_id: &str, nonce: Option<&str>) -> String {
+pub fn make_fake_id_token(
+    sub: &str,
+    email: &str,
+    client_id: &str,
+    iss: &str,
+    nonce: Option<&str>,
+) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
     let nonce_field = nonce
         .map(|n| format!(r#","nonce":"{n}""#))
         .unwrap_or_default();
     let claims = URL_SAFE_NO_PAD.encode(format!(
-        r#"{{"sub":"{sub}","email":"{email}","iss":"https://accounts.example.com","aud":["{client_id}"],"iat":1000000000,"exp":9999999999{nonce_field}}}"#
+        r#"{{"sub":"{sub}","email":"{email}","iss":"{iss}","aud":["{client_id}"],"iat":1000000000,"exp":9999999999{nonce_field}}}"#
     ));
     format!("{header}.{claims}.fakesig")
 }
@@ -482,7 +491,13 @@ async fn oidc_token_handler(
         _ => return Err(StatusCode::BAD_REQUEST),
     }
     let nonce = state.nonce.lock().await.clone();
-    let id_token = make_fake_id_token(&state.sub, &state.email, &state.client_id, nonce.as_deref());
+    let id_token = make_fake_id_token(
+        &state.sub,
+        &state.email,
+        &state.client_id,
+        &state.iss,
+        nonce.as_deref(),
+    );
     Ok(Json(FakeTokenResponse {
         access_token: state.access_token.as_ref().clone(),
         token_type: "Bearer".to_string(),

@@ -5,7 +5,7 @@ default: test
 
 # Lint with autofix: clippy fix + fmt
 lint:
-  cargo clippy --fix --allow-dirty --examples --tests
+  cargo clippy --fix --allow-dirty --examples --tests --features testing
   cargo fmt
 
 # Build
@@ -51,7 +51,7 @@ release:
 # Run the test suite
 [group('test')]
 test-suite: setup release
-  cargo nextest run --workspace
+  cargo nextest run --workspace --features testing
 
 # Verify code formatting
 [group('test')]
@@ -61,17 +61,17 @@ test-fmt:
 # Identify clippy warnings
 [group('test')]
 test-lint:
-  cargo clippy --workspace --examples --tests -- -D warnings
+  cargo clippy --workspace --examples --tests --features testing -- -D warnings
 
 # Calculate code coverage and open in-browser
 [group('test')]
 test-coverage: setup
-  cargo llvm-cov nextest --workspace --tests --html --open --ignore-filename-regex test_support
+  cargo llvm-cov nextest --workspace --tests --features testing --html --open --ignore-filename-regex test_support
 
 # Run doc tests
 [group('test')]
 test-doc:
-  cargo test --doc
+  cargo test --doc --features testing
 
 # Open docs
 [group('docs')]
@@ -81,12 +81,12 @@ docs:
 # Verify examples compile
 [group('test')]
 test-examples:
-  cargo check --examples
+  cargo check --examples --features testing
 
 # Verify doc links are valid
 [group('test')]
 test-doc-links:
-  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --quiet
+  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --quiet --features testing
 
 # Verify toml formatting
 [group('test')]

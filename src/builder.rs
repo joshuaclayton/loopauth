@@ -17,9 +17,9 @@ pub enum OidcJwksConfig {
     Disabled,
 }
 use crate::pages::{
-    ErrorPageRenderer, ErrorRendererStorage, OAuth2Scope, SuccessPageRenderer,
-    SuccessRendererStorage,
+    ErrorPageRenderer, ErrorRendererStorage, SuccessPageRenderer, SuccessRendererStorage,
 };
+use crate::scope::{OAuth2Scope, RequestScope};
 use crate::server::{
     CallbackResult, PortConfig, RenderedHtml, ServerState, bind_listener,
     redirect_uri_from_listener, run_callback_server,
@@ -68,6 +68,7 @@ pub struct CliTokenClient {
     on_url: Option<OnUrlCallback>,
     on_server_ready: Option<OnServerReadyCallback>,
     oidc_jwks: Option<OidcJwksConfig>,
+    http_client: reqwest::Client,
 }
 
 impl CliTokenClient {
@@ -138,12 +139,6 @@ impl CliTokenClient {
 
         // 3. Generate PKCE challenge
         let pkce = crate::pkce::PkceChallenge::generate();
-        tracing::info!(
-            code_verifier = pkce.code_verifier.as_str(),
-            code_challenge = pkce.code_challenge.as_str(),
-            code_challenge_method = pkce.code_challenge_method,
-            "pkce challenge generated"
-        );
 
         // 4. Generate state token
         let state_token = uuid::Uuid::new_v4().to_string();
@@ -267,6 +262,7 @@ impl CliTokenClient {
             return Err(RefreshError::NoRefreshToken);
         }
         let unvalidated = exchange_refresh_token(
+            &self.http_client,
             &self.token_url,
             self.client_id.as_str(),
             self.client_secret.as_deref(),
@@ -316,12 +312,13 @@ impl CliTokenClient {
     ///     .build();
     ///
     /// // Build an already-expired TokenSet so the refresh branch is taken
-    /// let tokens: loopauth::TokenSet = serde_json::from_value(serde_json::json!({
+    /// let tokens: loopauth::TokenSet<loopauth::Unvalidated> = serde_json::from_value(serde_json::json!({
     ///     "access_token": "old_token",
     ///     "token_type": "Bearer",
     ///     "refresh_token": "rt_value",
     ///     "expires_at": 0
     /// })).unwrap();
+    /// let tokens = tokens.into_validated();
     ///
     /// let outcome = client.refresh_if_expiring(&tokens, Duration::from_secs(300)).await.unwrap();
     /// assert!(matches!(outcome, RefreshOutcome::Refreshed(_)));
@@ -359,9 +356,9 @@ struct TokenResponse {
 /// Returns `Err(IdTokenError)` when parsing the JWT fails.
 fn parse_oidc_if_requested(
     id_token: Option<&str>,
-    scopes: &[crate::pages::OAuth2Scope],
+    scopes: &[crate::scope::OAuth2Scope],
 ) -> Result<Option<crate::oidc::Token>, crate::error::IdTokenError> {
-    if !scopes.contains(&crate::pages::OAuth2Scope::OpenId) {
+    if !scopes.contains(&crate::scope::OAuth2Scope::OpenId) {
         return Ok(None);
     }
     id_token.map(crate::oidc::Token::from_raw_jwt).transpose()
@@ -495,6 +492,7 @@ async fn handle_callback(
 
     // Exchange code for token - send error HTML on failure
     let token_set = match exchange_code(
+        &auth.http_client,
         &auth.token_url,
         auth.client_id.as_str(),
         auth.client_secret.as_deref(),
@@ -603,14 +601,19 @@ async fn render_success_html(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all arguments are distinct OAuth2 code exchange parameters; grouping them would obscure their individual meanings"
+)]
 async fn exchange_code(
+    http_client: &reqwest::Client,
     token_url: &url::Url,
     client_id: &str,
     client_secret: Option<&str>,
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
-    scopes: &[crate::pages::OAuth2Scope],
+    scopes: &[crate::scope::OAuth2Scope],
 ) -> Result<crate::token::TokenSet<crate::token::Unvalidated>, AuthError> {
     let mut params = vec![
         ("grant_type", "authorization_code"),
@@ -623,9 +626,7 @@ async fn exchange_code(
         params.push(("client_secret", secret));
     }
 
-    tracing::info!(url = token_url.as_str(), params = ?params, "token exchange request");
-
-    let response = reqwest::Client::new()
+    let response = http_client
         .post(token_url.as_str())
         .header(reqwest::header::ACCEPT, "application/json")
         .form(&params)
@@ -668,11 +669,12 @@ async fn exchange_code(
 }
 
 async fn exchange_refresh_token(
+    http_client: &reqwest::Client,
     token_url: &url::Url,
     client_id: &str,
     client_secret: Option<&str>,
     refresh_token: &str,
-    scopes: &[crate::pages::OAuth2Scope],
+    scopes: &[crate::scope::OAuth2Scope],
 ) -> Result<crate::token::TokenSet<crate::token::Unvalidated>, RefreshError> {
     let mut params = vec![
         ("grant_type", "refresh_token"),
@@ -683,7 +685,7 @@ async fn exchange_refresh_token(
         params.push(("client_secret", secret));
     }
 
-    let response = reqwest::Client::new()
+    let response = http_client
         .post(token_url.as_str())
         .header(reqwest::header::ACCEPT, "application/json")
         .form(&params)
@@ -860,7 +862,7 @@ impl Default for BuilderConfig {
 /// # Example
 ///
 /// ```no_run
-/// use loopauth::{CliTokenClient, OAuth2Scope};
+/// use loopauth::{CliTokenClient, RequestScope};
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = CliTokenClient::builder()
@@ -869,7 +871,7 @@ impl Default for BuilderConfig {
 ///     .token_url(url::Url::parse("https://provider.example.com/token")?)
 ///     .with_openid_scope()
 ///     .without_jwks_validation() // or .jwks_validator(Box::new(my_validator))
-///     .add_scopes([OAuth2Scope::Email, OAuth2Scope::OfflineAccess])
+///     .add_scopes([RequestScope::Email, RequestScope::OfflineAccess])
 ///     .on_auth_url(|url| {
 ///         url.query_pairs_mut().append_pair("access_type", "offline");
 ///     })
@@ -909,8 +911,9 @@ impl CliTokenClientBuilder {
     ///
     /// Sets `auth_url` and `token_url` from the discovery document and
     /// automatically enters OIDC mode (equivalent to calling
-    /// [`with_openid_scope`]). Callers must still call `.client_id()` before
-    /// `.build()`.
+    /// [`with_openid_scope`]). The issuer URL from the discovery document is
+    /// stored automatically, enabling `iss` claim validation on every received
+    /// ID token. Callers must still call `.client_id()` before `.build()`.
     ///
     /// [`with_openid_scope`]: CliTokenClientBuilder::with_openid_scope
     #[must_use]
@@ -944,17 +947,6 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
             oidc: self.oidc,
             config: self.config,
         }
-    }
-
-    /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
-    ///
-    /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
-    /// When using [`CliTokenClientBuilder::from_open_id_configuration`] the issuer is set
-    /// automatically from the discovery document.
-    #[must_use]
-    pub fn issuer(mut self, v: url::Url) -> Self {
-        self.config.issuer = Some(v);
-        self
     }
 
     /// Set the authorization endpoint URL. Required.
@@ -993,13 +985,16 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
     /// Scopes accumulate across multiple calls and are deduplicated. Call order
     /// does not affect the final scope set.
     ///
-    /// To include the `openid` scope and enable OIDC features, use
-    /// [`with_openid_scope`] instead — it also unlocks JWKS validator methods.
+    /// [`RequestScope`] intentionally excludes `openid` — use
+    /// [`with_openid_scope`] to enable OIDC mode and unlock JWKS validator methods.
     ///
     /// [`with_openid_scope`]: CliTokenClientBuilder::with_openid_scope
+    /// [`RequestScope`]: crate::RequestScope
     #[must_use]
-    pub fn add_scopes(mut self, v: impl IntoIterator<Item = OAuth2Scope>) -> Self {
-        self.config.scopes.extend(v);
+    pub fn add_scopes(mut self, v: impl IntoIterator<Item = RequestScope>) -> Self {
+        self.config
+            .scopes
+            .extend(v.into_iter().map(OAuth2Scope::from));
         self
     }
 
@@ -1150,6 +1145,19 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, NoOidc> {
 // ── OIDC pending → resolved ───────────────────────────────────────────────────
 
 impl<C, A, T> CliTokenClientBuilder<C, A, T, OidcPending> {
+    /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
+    ///
+    /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
+    /// When using [`CliTokenClientBuilder::from_open_id_configuration`] the issuer is set
+    /// automatically from the discovery document and this method is not needed.
+    ///
+    /// Only available in OIDC mode — `iss` validation only applies to ID tokens.
+    #[must_use]
+    pub fn issuer(mut self, v: url::Url) -> Self {
+        self.config.issuer = Some(v);
+        self
+    }
+
     /// Enable JWKS signature verification and transition to [`JwksEnabled`].
     ///
     /// The raw `id_token` string is passed to [`JwksValidator::validate`] after
@@ -1172,12 +1180,16 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, OidcPending> {
 
     /// Explicitly opt out of JWKS signature verification and transition to [`JwksDisabled`].
     ///
-    /// Claims (`exp`, `nbf`, `aud`, `iss`) are still validated per RFC 7519.
-    /// Only the cryptographic signature check is skipped.
+    /// **Security warning**: without JWKS validation, the `id_token` is not
+    /// cryptographically authenticated. Any party that can craft a JWT with
+    /// valid claims (including `"alg":"none"` tokens) will be accepted. Claims
+    /// (`exp`, `nbf`, `aud`, `iss`) are still validated per RFC 7519, but
+    /// those checks are only meaningful if the token's authenticity is
+    /// guaranteed by other means.
     ///
-    /// Use only when you have an out-of-band trust anchor (e.g., a mTLS-secured
-    /// private network or a test environment where real JWKS validation is not
-    /// possible). In all other cases, prefer [`jwks_validator`].
+    /// Use only in test environments or when an out-of-band trust anchor (e.g.,
+    /// mTLS-secured private network) guarantees token authenticity. In
+    /// production, always prefer [`jwks_validator`].
     ///
     /// [`jwks_validator`]: CliTokenClientBuilder::jwks_validator
     #[must_use]
@@ -1216,6 +1228,32 @@ impl<A, T> CliTokenClientBuilder<HasClientId, A, T, OidcPending> {
             oidc: JwksEnabled(validator),
             config: self.config,
         }
+    }
+}
+
+impl<C, A, T> CliTokenClientBuilder<C, A, T, JwksEnabled> {
+    /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
+    ///
+    /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
+    ///
+    /// Only available in OIDC mode — `iss` validation only applies to ID tokens.
+    #[must_use]
+    pub fn issuer(mut self, v: url::Url) -> Self {
+        self.config.issuer = Some(v);
+        self
+    }
+}
+
+impl<C, A, T> CliTokenClientBuilder<C, A, T, JwksDisabled> {
+    /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
+    ///
+    /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
+    ///
+    /// Only available in OIDC mode — `iss` validation only applies to ID tokens.
+    #[must_use]
+    pub fn issuer(mut self, v: url::Url) -> Self {
+        self.config.issuer = Some(v);
+        self
     }
 }
 
@@ -1299,6 +1337,7 @@ fn build_client(
         on_url: config.on_url,
         on_server_ready: config.on_server_ready,
         oidc_jwks,
+        http_client: reqwest::Client::new(),
     }
 }
 
@@ -1316,7 +1355,7 @@ mod tests {
     };
     use crate::jwks::{JwksValidationError, JwksValidator};
     use crate::oidc::Token;
-    use crate::pages::OAuth2Scope;
+    use crate::scope::OAuth2Scope;
     use async_trait::async_trait;
 
     fn fake_jwt(sub: &str, email: &str) -> String {

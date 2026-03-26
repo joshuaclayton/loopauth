@@ -72,10 +72,15 @@ pub async fn callback_handler(
             error,
             description: params.error_description,
         }
-    } else {
+    } else if let Some(code) = params.code {
         CallbackResult::Success {
-            code: params.code.unwrap_or_else(String::new),
+            code,
             state: params.state.unwrap_or_else(String::new),
+        }
+    } else {
+        CallbackResult::ProviderError {
+            error: "invalid_request".to_string(),
+            description: Some("authorization response is missing the code parameter".to_string()),
         }
     };
 

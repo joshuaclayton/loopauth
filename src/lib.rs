@@ -25,7 +25,7 @@
 //! With explicit URLs:
 //!
 //! ```no_run
-//! use loopauth::{CliTokenClient, OAuth2Scope};
+//! use loopauth::{CliTokenClient, RequestScope};
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = CliTokenClient::builder()
@@ -33,7 +33,7 @@
 //!     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
 //!     .token_url(url::Url::parse("https://provider.example.com/token")?)
 //!     .with_openid_scope()
-//!     .add_scopes([OAuth2Scope::Email])
+//!     .add_scopes([RequestScope::Email])
 //!     .without_jwks_validation() // or .jwks_validator(Box::new(my_validator))
 //!     .build();
 //!
@@ -45,7 +45,7 @@
 //! With OIDC auto-discovery (provider URLs are fetched automatically):
 //!
 //! ```no_run
-//! use loopauth::{CliTokenClientBuilder, OAuth2Scope, oidc::OpenIdConfiguration};
+//! use loopauth::{CliTokenClientBuilder, RequestScope, oidc::OpenIdConfiguration};
 //! use url::Url;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,7 +56,7 @@
 //! let client = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
 //!     .client_id("my-client-id")
 //!     .with_open_id_configuration_jwks_validator(&open_id_configuration)
-//!     .add_scopes([OAuth2Scope::Email])
+//!     .add_scopes([RequestScope::Email])
 //!     .build();
 //!
 //! // let tokens = client.run_authorization_flow().await?;
@@ -72,22 +72,23 @@ mod jwks;
 pub mod oidc;
 mod pages;
 mod pkce;
+mod scope;
 mod server;
 mod store;
 mod token;
 
+#[cfg(any(test, doctest, feature = "testing"))]
 #[doc(hidden)]
 pub mod test_support;
 
 pub use builder::{
     CliTokenClient, CliTokenClientBuilder, HasAuthUrl, HasClientId, HasTokenUrl, JwksDisabled,
-    JwksEnabled, NoAuthUrl, NoClientId, NoOidc, NoTokenUrl, OidcJwksConfig, OidcPending,
+    JwksEnabled, NoAuthUrl, NoClientId, NoOidc, NoTokenUrl, OidcPending,
 };
 pub use error::{AuthError, CallbackError, IdTokenError, RefreshError, TokenStoreError};
 pub use jwks::{JwksValidationError, JwksValidator, RemoteJwksValidator};
-pub use pages::{
-    ErrorPageContext, ErrorPageRenderer, OAuth2Scope, PageContext, SuccessPageRenderer,
-};
+pub use pages::{ErrorPageContext, ErrorPageRenderer, PageContext, SuccessPageRenderer};
+pub use scope::{OAuth2Scope, RequestScope};
 pub use store::TokenStore;
 pub use token::{
     AccessToken, RefreshOutcome, RefreshToken, TokenSet, Unvalidated, Validated, ValidationState,

@@ -9,7 +9,7 @@ use std::fmt;
 /// # Example
 ///
 /// ```
-/// use loopauth::TokenSet;
+/// use loopauth::{TokenSet, Unvalidated};
 ///
 /// let json = r#"{
 ///   "access_token": "tok123",
@@ -19,7 +19,7 @@ use std::fmt;
 ///   "oidc": null,
 ///   "scopes": []
 /// }"#;
-/// let tokens: TokenSet = serde_json::from_str(json).unwrap();
+/// let tokens: TokenSet<Unvalidated> = serde_json::from_str(json).unwrap();
 /// let at = tokens.access_token();
 /// assert_eq!(at.as_str(), "tok123");
 /// ```

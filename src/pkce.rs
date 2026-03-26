@@ -15,8 +15,7 @@ impl PkceChallenge {
     #[must_use]
     pub(crate) fn generate() -> Self {
         // 48 random bytes → 64 base64url chars (within RFC 7636 bounds of 43–128)
-        // Use uuid v4 bytes to avoid getrandom 0.2/0.3 version ambiguity.
-        // uuid v4 uses OS RNG via getrandom internally - cryptographically random.
+        // Three UUID v4 values supply OS-level entropy without a direct getrandom dependency.
         use uuid::Uuid;
         let b1 = Uuid::new_v4().into_bytes();
         let b2 = Uuid::new_v4().into_bytes();
