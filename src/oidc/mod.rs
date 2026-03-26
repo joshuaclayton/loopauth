@@ -20,5 +20,5 @@ mod token;
 pub use claims::{Audience, Claims, Email, Issuer, PictureUrl, SubjectIdentifier};
 pub use configuration::OpenIdConfiguration;
 pub use error::OpenIdConfigurationError;
-pub(crate) use token::IssuerValidation;
 pub use token::Token;
+pub(crate) use token::{CLOCK_SKEW_LEEWAY_SECONDS, IssuerValidation};

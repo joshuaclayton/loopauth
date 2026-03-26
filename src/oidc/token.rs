@@ -2,12 +2,12 @@ use super::{Audience, Claims};
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
 
-/// Permitted clock skew when validating `exp` and `nbf` claims (RFC 7519 §4.1.4–5).
+/// Permitted clock skew in seconds when validating `exp` and `nbf` claims (RFC 7519 §4.1.4–5).
 ///
-/// Tokens that expired up to this duration ago (or whose `nbf` is up to this duration
+/// Tokens that expired up to this many seconds ago (or whose `nbf` is up to this many seconds
 /// in the future) are still accepted to account for clock drift between the issuer and
 /// the client.
-const CLOCK_SKEW_LEEWAY: Duration = Duration::from_secs(60);
+pub const CLOCK_SKEW_LEEWAY_SECONDS: u64 = 60;
 
 /// Controls whether the `iss` claim is validated during ID token verification.
 ///
@@ -231,21 +231,23 @@ impl Token {
     ) -> Result<(), crate::error::IdTokenError> {
         use crate::error::IdTokenError;
 
+        let leeway = Duration::from_secs(CLOCK_SKEW_LEEWAY_SECONDS);
+
         // §4.1.4 — exp: reject only if expired beyond the leeway window
-        if SystemTime::now() > self.claims.exp() + CLOCK_SKEW_LEEWAY {
+        if SystemTime::now() > self.claims.exp() + leeway {
             return Err(IdTokenError::Expired);
         }
 
         // §4.1.5 — nbf: accept tokens whose nbf is within the leeway window
         if let Some(nbf) = self.nbf
-            && SystemTime::now() + CLOCK_SKEW_LEEWAY < nbf
+            && SystemTime::now() + leeway < nbf
         {
             return Err(IdTokenError::NotYetValid);
         }
 
         // §4.1.6 — iat: reject tokens claiming to have been issued in the future
         // (beyond leeway), which indicates forgery or severe clock misconfiguration.
-        if self.claims.iat() > SystemTime::now() + CLOCK_SKEW_LEEWAY {
+        if self.claims.iat() > SystemTime::now() + leeway {
             return Err(IdTokenError::MalformedIdToken(
                 "iat claim is in the future".to_owned(),
             ));

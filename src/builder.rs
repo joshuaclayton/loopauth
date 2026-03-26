@@ -42,6 +42,8 @@ impl ClientId {
 }
 
 const TIMEOUT_DURATION_IN_SECONDS: u64 = 300;
+const HTTP_CONNECT_TIMEOUT_SECONDS: u64 = 10;
+const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 
 /// Acquires OAuth 2.0 provider tokens for CLI applications via the Authorization
 /// Code + PKCE flow.
@@ -271,7 +273,7 @@ impl CliTokenClient {
         )
         .await?;
         if let Some(oidc_jwks) = &self.oidc_jwks {
-            validate_id_token(
+            validate_id_token_if_present(
                 oidc_jwks,
                 unvalidated,
                 self.client_id.as_str(),
@@ -279,8 +281,6 @@ impl CliTokenClient {
                     crate::oidc::IssuerValidation::Skip,
                     crate::oidc::IssuerValidation::MustMatch,
                 ),
-                // Nonce is only validated during the initial authorization flow, not on refresh
-                None,
             )
             .await
             .map_err(RefreshError::IdToken)
@@ -416,7 +416,7 @@ fn validate_callback_code(
     }
 }
 
-/// Validate an ID token and promote the token set to the [`crate::token::Validated`] state.
+/// Validate an ID token that MUST be present; used in the initial authorization flow.
 ///
 /// Two-phase validation per RFC 7519 §7.2:
 /// 1. Cryptographic signature check via JWKS (when [`OidcJwksConfig::Enabled`]).
@@ -424,7 +424,9 @@ fn validate_callback_code(
 ///
 /// Claims are only checked after the signature is verified to prevent accepting
 /// claims from a tampered or unsigned token.
-async fn validate_id_token(
+///
+/// Returns [`crate::error::IdTokenError::NoIdToken`] when the token set carries no `id_token`.
+async fn validate_id_token_required(
     oidc_jwks: &OidcJwksConfig,
     token_set: crate::token::TokenSet<crate::token::Unvalidated>,
     client_id: &str,
@@ -444,6 +446,37 @@ async fn validate_id_token(
 
     // RFC 7519 §7.2: validate standard claims after signature check
     oidc.validate_standard_claims(client_id, issuer, expected_nonce)?;
+
+    Ok(token_set.into_validated())
+}
+
+/// Validate an ID token if present; used in the refresh flow.
+///
+/// Most OIDC providers do not return an `id_token` on refresh. When absent the
+/// token set is promoted directly without validation. When present, full two-phase
+/// validation is performed (signature + standard claims). Nonce is never checked
+/// on refresh (OIDC Core §3.1.3.7).
+async fn validate_id_token_if_present(
+    oidc_jwks: &OidcJwksConfig,
+    token_set: crate::token::TokenSet<crate::token::Unvalidated>,
+    client_id: &str,
+    issuer: crate::oidc::IssuerValidation<'_>,
+) -> Result<crate::token::TokenSet<crate::token::Validated>, crate::error::IdTokenError> {
+    use crate::error::IdTokenError;
+
+    let Some(oidc) = token_set.oidc_token() else {
+        return Ok(token_set.into_validated());
+    };
+
+    if let OidcJwksConfig::Enabled(validator) = oidc_jwks {
+        validator
+            .validate(oidc.raw())
+            .await
+            .map_err(IdTokenError::JwksValidationFailed)?;
+    }
+
+    // RFC 7519 §7.2: validate standard claims after signature check; nonce skipped on refresh
+    oidc.validate_standard_claims(client_id, issuer, None)?;
 
     Ok(token_set.into_validated())
 }
@@ -513,7 +546,7 @@ async fn handle_callback(
 
     // Run JWKS validation when OIDC is configured; otherwise promote directly
     let token_set = if let Some(oidc_jwks) = &auth.oidc_jwks {
-        match validate_id_token(
+        match validate_id_token_required(
             oidc_jwks,
             token_set,
             auth.client_id.as_str(),
@@ -626,6 +659,7 @@ async fn exchange_code(
         params.push(("client_secret", secret));
     }
 
+    let t0 = std::time::SystemTime::now();
     let response = http_client
         .post(token_url.as_str())
         .header(reqwest::header::ACCEPT, "application/json")
@@ -635,7 +669,8 @@ async fn exchange_code(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
+        let body_bytes = response.bytes().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         return Err(AuthError::TokenExchange { status, body });
     }
 
@@ -645,7 +680,7 @@ async fn exchange_code(
 
     let expires_at = token_response
         .expires_in
-        .map(|secs| std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
+        .map(|secs| t0 + std::time::Duration::from_secs(secs));
 
     let oidc = parse_oidc_if_requested(token_response.id_token.as_deref(), scopes)
         .map_err(AuthError::IdToken)?;
@@ -676,6 +711,15 @@ async fn exchange_refresh_token(
     refresh_token: &str,
     scopes: &[crate::scope::OAuth2Scope],
 ) -> Result<crate::token::TokenSet<crate::token::Unvalidated>, RefreshError> {
+    // RFC 6749 §6: scope is optional on refresh but required by some providers
+    let scope_str = (!scopes.is_empty()).then(|| {
+        scopes
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+
     let mut params = vec![
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
@@ -684,7 +728,11 @@ async fn exchange_refresh_token(
     if let Some(secret) = client_secret {
         params.push(("client_secret", secret));
     }
+    if let Some(ref s) = scope_str {
+        params.push(("scope", s.as_str()));
+    }
 
+    let t0 = std::time::SystemTime::now();
     let response = http_client
         .post(token_url.as_str())
         .header(reqwest::header::ACCEPT, "application/json")
@@ -694,7 +742,8 @@ async fn exchange_refresh_token(
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
+        let body_bytes = response.bytes().await.unwrap_or_default();
+        let body = String::from_utf8_lossy(&body_bytes).into_owned();
         return Err(RefreshError::TokenExchange { status, body });
     }
 
@@ -702,7 +751,7 @@ async fn exchange_refresh_token(
 
     let expires_at = token_response
         .expires_in
-        .map(|secs| std::time::SystemTime::now() + std::time::Duration::from_secs(secs));
+        .map(|secs| t0 + std::time::Duration::from_secs(secs));
 
     let oidc = parse_oidc_if_requested(token_response.id_token.as_deref(), scopes)
         .map_err(RefreshError::IdToken)?;
@@ -1337,7 +1386,11 @@ fn build_client(
         on_url: config.on_url,
         on_server_ready: config.on_server_ready,
         oidc_jwks,
-        http_client: reqwest::Client::new(),
+        http_client: reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECONDS))
+            .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
+            .build()
+            .unwrap_or_default(),
     }
 }
 

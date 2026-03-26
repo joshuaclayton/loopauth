@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use url::Url;
 
-use crate::oidc::{OpenIdConfiguration, OpenIdConfigurationError};
+use crate::oidc::{CLOCK_SKEW_LEEWAY_SECONDS, OpenIdConfiguration, OpenIdConfigurationError};
+
+const JWKS_CONNECT_TIMEOUT_SECONDS: u64 = 10;
+const JWKS_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 
 /// An error returned by a [`JwksValidator`] when the `id_token` fails validation.
 ///
@@ -198,6 +201,7 @@ fn jwk_key_description(key: &JwkKey) -> String {
 pub struct RemoteJwksValidator {
     jwks_url: Url,
     client_id: String,
+    http_client: reqwest::Client,
 }
 
 impl RemoteJwksValidator {
@@ -207,9 +211,15 @@ impl RemoteJwksValidator {
     /// `client_id` is used for audience validation.
     #[must_use]
     pub fn new(jwks_url: Url, client_id: impl Into<String>) -> Self {
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(JWKS_CONNECT_TIMEOUT_SECONDS))
+            .timeout(std::time::Duration::from_secs(JWKS_REQUEST_TIMEOUT_SECONDS))
+            .build()
+            .unwrap_or_default();
         Self {
             jwks_url,
             client_id: client_id.into(),
+            http_client,
         }
     }
 
@@ -277,6 +287,7 @@ fn build_decoding_key_and_validation(
     use jsonwebtoken::Algorithm::{ES256, ES384, PS256, PS384, PS512, RS256, RS384, RS512};
 
     let mut validation = jsonwebtoken::Validation::new(alg);
+    validation.leeway = CLOCK_SKEW_LEEWAY_SECONDS;
     validation.set_audience(&[client_id]);
 
     match (alg, key) {
@@ -338,7 +349,10 @@ impl JwksValidator for RemoteJwksValidator {
         }
 
         tracing::debug!("fetching JWKS from {}", self.jwks_url);
-        let jwks: JwksResponse = reqwest::get(self.jwks_url.as_str())
+        let jwks: JwksResponse = self
+            .http_client
+            .get(self.jwks_url.as_str())
+            .send()
             .await
             .map_err(|err| JwksValidationError::new(format!("failed to fetch JWKS: {err}")))?
             .json::<JwksResponse>()

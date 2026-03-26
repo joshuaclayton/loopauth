@@ -1,5 +1,5 @@
 use crate::error::TokenStoreError;
-use crate::token::TokenSet;
+use crate::token::{TokenSet, Unvalidated};
 use async_trait::async_trait;
 
 /// Persistent storage interface for [`TokenSet`] values.
@@ -9,23 +9,36 @@ use async_trait::async_trait;
 /// [`TokenStore::save`] with the [`crate::TokenSet`] returned by
 /// [`crate::CliTokenClient::run_authorization_flow`].
 ///
+/// `load` returns [`TokenSet<Unvalidated>`] so that callers must explicitly call
+/// [`TokenSet::into_validated`] after loading, making the promotion from stored
+/// bytes to trusted in-memory state a deliberate, visible step.
+///
 /// # Example
 ///
 /// ```no_run
 /// use async_trait::async_trait;
-/// use loopauth::{TokenSet, TokenStore, TokenStoreError};
+/// use loopauth::{TokenSet, TokenStore, TokenStoreError, Unvalidated};
 /// use std::sync::Mutex;
 ///
-/// struct MemoryStore(Mutex<Option<TokenSet>>);
+/// struct MemoryStore(Mutex<Option<String>>);
 ///
 /// #[async_trait]
 /// impl TokenStore for MemoryStore {
-///     async fn load(&self) -> Result<Option<TokenSet>, TokenStoreError> {
-///         Ok(self.0.lock().unwrap().clone())
+///     async fn load(&self) -> Result<Option<TokenSet<Unvalidated>>, TokenStoreError> {
+///         let guard = self.0.lock().unwrap();
+///         guard
+///             .as_deref()
+///             .map(|s| {
+///                 serde_json::from_str(s)
+///                     .map_err(|e| TokenStoreError::Serialization(e.to_string()))
+///             })
+///             .transpose()
 ///     }
 ///
 ///     async fn save(&self, tokens: &TokenSet) -> Result<(), TokenStoreError> {
-///         *self.0.lock().unwrap() = Some(tokens.clone());
+///         let json = serde_json::to_string(tokens)
+///             .map_err(|e| TokenStoreError::Serialization(e.to_string()))?;
+///         *self.0.lock().unwrap() = Some(json);
 ///         Ok(())
 ///     }
 ///
@@ -39,10 +52,13 @@ use async_trait::async_trait;
 pub trait TokenStore: Send + Sync {
     /// Load the stored [`TokenSet`], returning `Ok(None)` if none is persisted.
     ///
+    /// Returns [`TokenSet<Unvalidated>`] — call [`TokenSet::into_validated`] after
+    /// loading to promote the token set to the validated state.
+    ///
     /// # Errors
     ///
     /// Returns [`TokenStoreError`] on I/O or deserialization failure.
-    async fn load(&self) -> Result<Option<TokenSet>, TokenStoreError>;
+    async fn load(&self) -> Result<Option<TokenSet<Unvalidated>>, TokenStoreError>;
 
     /// Persist a [`TokenSet`], overwriting any previously stored value.
     ///
@@ -63,14 +79,14 @@ pub trait TokenStore: Send + Sync {
 mod tests {
     use super::TokenStore;
     use crate::error::TokenStoreError;
-    use crate::token::TokenSet;
+    use crate::token::{TokenSet, Unvalidated};
     use std::time::{Duration, SystemTime};
 
     struct NoopStore;
 
     #[async_trait::async_trait]
     impl TokenStore for NoopStore {
-        async fn load(&self) -> Result<Option<TokenSet>, TokenStoreError> {
+        async fn load(&self) -> Result<Option<TokenSet<Unvalidated>>, TokenStoreError> {
             Ok(None)
         }
 

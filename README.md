@@ -19,7 +19,7 @@ Token storage and downstream identity consumption are intentionally out of scope
 Provider URLs are fetched automatically via `.well-known/openid-configuration`:
 
 ```rust
-use loopauth::{CliTokenClientBuilder, OAuth2Scope, OpenIdConfiguration};
+use loopauth::{CliTokenClientBuilder, RequestScope, oidc::OpenIdConfiguration};
 use url::Url;
 
 let open_id_configuration = OpenIdConfiguration::fetch(
@@ -30,7 +30,7 @@ let open_id_configuration = OpenIdConfiguration::fetch(
 let client = CliTokenClientBuilder::from_open_id_configuration(&open_id_configuration)
     .client_id("my-client-id")
     .with_open_id_configuration_jwks_validator(&open_id_configuration)
-    .add_scopes([OAuth2Scope::Email])
+    .add_scopes([RequestScope::Email])
     .build();
 
 let tokens = client.run_authorization_flow().await?;
@@ -39,7 +39,7 @@ let tokens = client.run_authorization_flow().await?;
 ### Explicit URLs
 
 ```rust
-use loopauth::{CliTokenClient, OAuth2Scope};
+use loopauth::{CliTokenClient, RequestScope};
 use url::Url;
 
 let client = CliTokenClient::builder()
@@ -48,7 +48,7 @@ let client = CliTokenClient::builder()
     .token_url(Url::parse("https://provider.example.com/token")?)
     .with_openid_scope()
     .jwks_validator(Box::new(my_validator)) // or .without_jwks_validation()
-    .add_scopes([OAuth2Scope::Email])
+    .add_scopes([RequestScope::Email])
     .build();
 
 let tokens = client.run_authorization_flow().await?;
