@@ -4,7 +4,9 @@
     clippy::expect_used,
     reason = "tests do not need to meet production lint standards"
 )]
-use loopauth::{AuthError, CallbackError, CliTokenClient, test_support::FakeOAuthServer};
+use loopauth::{
+    AuthError, CallbackError, CliTokenClient, ExtraAuthParams, test_support::FakeOAuthServer,
+};
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -243,4 +245,96 @@ async fn code_verifier_sent_in_token_exchange() {
         "expected Ok (code_verifier was sent), got {result:?}"
     );
     assert_eq!(result.unwrap().access_token().as_str(), "pkce_token");
+}
+
+/// Drives the browser side of the auth flow: follows the authorize redirect and
+/// fires the loopback callback.  Used by `on_auth_url` integration tests.
+async fn drive_browser(url_rx: std::sync::mpsc::Receiver<String>) {
+    if let Ok(url) = url_rx.recv() {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = client.get(&url).send().await.expect("authorize request");
+        if let Some(location) = response.headers().get("location") {
+            let callback_url = location.to_str().unwrap().to_string();
+            reqwest::get(&callback_url).await.ok();
+        }
+    }
+}
+
+#[tokio::test]
+async fn on_auth_url_extra_param_appears_in_auth_url() {
+    let fake = FakeOAuthServer::start("tok").await;
+    tokio::task::yield_now().await;
+
+    // Channel for driving the browser; channel for capturing the auth URL.
+    let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
+    let (capture_tx, capture_rx) = std::sync::mpsc::channel::<String>();
+
+    tokio::spawn(async move { drive_browser(url_rx).await });
+
+    let cli_auth = CliTokenClient::builder()
+        .client_id("test-client")
+        .auth_url(fake.auth_url())
+        .token_url(fake.token_url())
+        .open_browser(false)
+        .on_auth_url(|params: &mut ExtraAuthParams| {
+            params.append("access_type", "offline");
+        })
+        .on_url(move |url| {
+            let _ = capture_tx.send(url.to_string());
+            let _ = url_tx.send(url.to_string());
+        })
+        .build();
+
+    cli_auth.run_authorization_flow().await.unwrap();
+
+    let auth_url = url::Url::parse(&capture_rx.recv().unwrap()).unwrap();
+    let pairs: std::collections::HashMap<_, _> = auth_url.query_pairs().collect();
+    assert_eq!(
+        pairs.get("access_type").map(std::convert::AsRef::as_ref),
+        Some("offline"),
+        "extra param 'access_type=offline' should appear in the auth URL"
+    );
+}
+
+#[tokio::test]
+async fn on_auth_url_reserved_param_is_not_overridden() {
+    let fake = FakeOAuthServer::start("tok").await;
+    tokio::task::yield_now().await;
+
+    let (url_tx, url_rx) = std::sync::mpsc::channel::<String>();
+    let (capture_tx, capture_rx) = std::sync::mpsc::channel::<String>();
+
+    tokio::spawn(async move { drive_browser(url_rx).await });
+
+    let cli_auth = CliTokenClient::builder()
+        .client_id("test-client")
+        .auth_url(fake.auth_url())
+        .token_url(fake.token_url())
+        .open_browser(false)
+        .on_auth_url(|params: &mut ExtraAuthParams| {
+            // Attempt to override a security-critical parameter.
+            params.append("state", "INJECTED_STATE");
+        })
+        .on_url(move |url| {
+            let _ = capture_tx.send(url.to_string());
+            let _ = url_tx.send(url.to_string());
+        })
+        .build();
+
+    cli_auth.run_authorization_flow().await.unwrap();
+
+    let auth_url = url::Url::parse(&capture_rx.recv().unwrap()).unwrap();
+    let state_values: Vec<_> = auth_url
+        .query_pairs()
+        .filter(|(k, _)| k == "state")
+        .collect();
+    // Exactly one `state` value (the library-generated UUID), not our injected value.
+    assert_eq!(state_values.len(), 1, "state should appear exactly once");
+    assert_ne!(
+        state_values[0].1, "INJECTED_STATE",
+        "reserved 'state' param must not be overridden by the hook"
+    );
 }

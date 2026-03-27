@@ -82,8 +82,8 @@ mod token;
 pub mod test_support;
 
 pub use builder::{
-    CliTokenClient, CliTokenClientBuilder, HasAuthUrl, HasClientId, HasTokenUrl, JwksDisabled,
-    JwksEnabled, NoAuthUrl, NoClientId, NoOidc, NoTokenUrl, OidcPending,
+    CliTokenClient, CliTokenClientBuilder, ExtraAuthParams, HasAuthUrl, HasClientId, HasTokenUrl,
+    JwksDisabled, JwksEnabled, NoAuthUrl, NoClientId, NoOidc, NoTokenUrl, OidcPending,
 };
 pub use error::{AuthError, CallbackError, IdTokenError, RefreshError, TokenStoreError};
 pub use jwks::{JwksValidationError, JwksValidator, RemoteJwksValidator};

@@ -67,6 +67,7 @@ indexing_slicing = "deny"
 string_slice = "deny"     # can panic on non-ASCII boundaries
 # Meta: suppressions must explain themselves
 allow_attributes_without_reason = "deny"
+allow_attributes = "deny"
 # Style consistency worth enforcing
 partial_pub_fields = "deny"
 unseparated_literal_suffix = "deny"

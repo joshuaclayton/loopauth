@@ -27,7 +27,110 @@ use crate::server::{
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-type OnAuthUrlCallback = Box<dyn Fn(&mut url::Url) + Send + Sync + 'static>;
+/// Holds the security-critical authorization URL parameters owned by `loopauth`.
+///
+/// Constructed just before the auth URL is finalized; `append_to` writes all
+/// parameters to the URL.  `KEYS` is the authoritative list of reserved
+/// parameter names — [`ExtraAuthParams`] uses it to reject hook-supplied
+/// values that would collide with these fields.
+struct AuthUrlParams<'a> {
+    client_id: &'a str,
+    redirect_uri: &'a url::Url,
+    state_token: &'a str,
+    pkce: &'a crate::pkce::PkceChallenge,
+    nonce: Option<&'a str>,
+    scopes: &'a [OAuth2Scope],
+}
+
+impl AuthUrlParams<'_> {
+    /// The query-parameter keys set by [`AuthUrlParams::append_to`].
+    ///
+    /// Used by [`ExtraAuthParams`] to reject hook-supplied pairs whose keys
+    /// would collide with library-controlled values.
+    const KEYS: &'static [&'static str] = &[
+        "response_type",
+        "client_id",
+        "redirect_uri",
+        "state",
+        "code_challenge",
+        "code_challenge_method",
+        "nonce",
+        "scope",
+    ];
+
+    fn append_to(&self, url: &mut url::Url) {
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", self.client_id)
+            .append_pair("redirect_uri", self.redirect_uri.as_str())
+            .append_pair("state", self.state_token)
+            .append_pair("code_challenge", &self.pkce.code_challenge)
+            .append_pair("code_challenge_method", self.pkce.code_challenge_method);
+
+        if let Some(nonce) = self.nonce {
+            url.query_pairs_mut().append_pair("nonce", nonce);
+        }
+
+        if !self.scopes.is_empty() {
+            let scope_str = self
+                .scopes
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ");
+            url.query_pairs_mut().append_pair("scope", &scope_str);
+        }
+    }
+}
+
+/// Accumulates extra query parameters to append to the authorization URL.
+///
+/// Passed by `&mut` reference to the callback registered with
+/// [`CliTokenClientBuilder::on_auth_url`].  Call [`ExtraAuthParams::append`]
+/// to add provider-specific parameters such as `access_type=offline` for
+/// Google OAuth 2.0.
+///
+/// The following keys are **reserved** and cannot be overridden via this
+/// interface — any attempt is silently dropped and a `tracing::warn!` is
+/// emitted:
+/// `response_type`, `client_id`, `redirect_uri`, `state`,
+/// `code_challenge`, `code_challenge_method`, `nonce`, `scope`.
+///
+/// The library sets those parameters unconditionally to satisfy RFC 6749
+/// §4.1.1, RFC 7636, and OIDC Core §3.1.2.1 security requirements.
+pub struct ExtraAuthParams {
+    pairs: Vec<(String, String)>,
+}
+
+impl ExtraAuthParams {
+    const fn new() -> Self {
+        Self { pairs: Vec::new() }
+    }
+
+    /// Append a query parameter to the authorization URL.
+    ///
+    /// Parameters whose key matches a reserved name are silently dropped; see
+    /// the type-level documentation for the full list of reserved keys.
+    pub fn append(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.pairs.push((key.into(), value.into()));
+        self
+    }
+
+    fn apply_to(self, url: &mut url::Url) {
+        for (key, value) in self.pairs {
+            if AuthUrlParams::KEYS.contains(&key.as_str()) {
+                tracing::warn!(
+                    key = key.as_str(),
+                    "on_auth_url hook attempted to set a reserved parameter; ignoring"
+                );
+            } else {
+                url.query_pairs_mut().append_pair(&key, &value);
+            }
+        }
+    }
+}
+
+type OnAuthUrlCallback = Box<dyn Fn(&mut ExtraAuthParams) + Send + Sync + 'static>;
 type OnUrlCallback = Box<dyn Fn(&url::Url) + Send + Sync + 'static>;
 type OnServerReadyCallback = Box<dyn Fn(u16) + Send + Sync + 'static>;
 
@@ -153,32 +256,21 @@ impl CliTokenClient {
 
         // 6. Build auth URL with query params
         let mut auth_url = self.auth_url.clone();
-        auth_url
-            .query_pairs_mut()
-            .append_pair("response_type", "code")
-            .append_pair("client_id", self.client_id.as_str())
-            .append_pair("redirect_uri", redirect_uri_url.as_str())
-            .append_pair("state", &state_token)
-            .append_pair("code_challenge", &pkce.code_challenge)
-            .append_pair("code_challenge_method", pkce.code_challenge_method);
-
-        if let Some(ref n) = nonce {
-            auth_url.query_pairs_mut().append_pair("nonce", n);
+        AuthUrlParams {
+            client_id: self.client_id.as_str(),
+            redirect_uri: &redirect_uri_url,
+            state_token: &state_token,
+            pkce: &pkce,
+            nonce: nonce.as_deref(),
+            scopes: &self.scopes,
         }
+        .append_to(&mut auth_url);
 
-        if !self.scopes.is_empty() {
-            let scope_str = self
-                .scopes
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" ");
-            auth_url.query_pairs_mut().append_pair("scope", &scope_str);
-        }
-
-        // 7. Call on_auth_url hook
+        // 7. Call on_auth_url hook to collect extra parameters
         if let Some(ref hook) = self.on_auth_url {
-            hook(&mut auth_url);
+            let mut extras = ExtraAuthParams::new();
+            hook(&mut extras);
+            extras.apply_to(&mut auth_url);
         }
 
         // 8. Create channels
@@ -921,8 +1013,8 @@ impl Default for BuilderConfig {
 ///     .with_openid_scope()
 ///     .without_jwks_validation() // or .jwks_validator(Box::new(my_validator))
 ///     .add_scopes([RequestScope::Email, RequestScope::OfflineAccess])
-///     .on_auth_url(|url| {
-///         url.query_pairs_mut().append_pair("access_type", "offline");
+///     .on_auth_url(|params| {
+///         params.append("access_type", "offline");
 ///     })
 ///     .build();
 ///
@@ -1133,11 +1225,35 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
         self
     }
 
-    /// Lets callers mutate the authorization URL before it is opened or logged. The closure
-    /// receives a mutable `&mut url::Url` and may append custom query parameters (e.g.,
-    /// `access_type=offline` for Google). Called after PKCE and state parameters are set.
+    /// Register a callback that appends extra query parameters to the authorization URL.
+    ///
+    /// The callback receives a `&mut` [`ExtraAuthParams`] and may call
+    /// [`ExtraAuthParams::append`] to add provider-specific parameters, for
+    /// example `access_type=offline` required by Google OAuth 2.0.
+    ///
+    /// The callback is invoked after PKCE, state, nonce, and scope parameters
+    /// have already been set.  Parameters with reserved keys
+    /// (`response_type`, `client_id`, `redirect_uri`, `state`,
+    /// `code_challenge`, `code_challenge_method`, `nonce`, `scope`) are
+    /// silently dropped and a `tracing::warn!` is emitted; the library controls
+    /// those values unconditionally.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use loopauth::{CliTokenClient, ExtraAuthParams};
+    ///
+    /// let _client = CliTokenClient::builder()
+    ///     .client_id("my-client")
+    ///     .auth_url(url::Url::parse("https://accounts.example.com/authorize").unwrap())
+    ///     .token_url(url::Url::parse("https://accounts.example.com/token").unwrap())
+    ///     .on_auth_url(|params: &mut ExtraAuthParams| {
+    ///         params.append("access_type", "offline");
+    ///     })
+    ///     .build();
+    /// ```
     #[must_use]
-    pub fn on_auth_url(mut self, f: impl Fn(&mut url::Url) + Send + Sync + 'static) -> Self {
+    pub fn on_auth_url(mut self, f: impl Fn(&mut ExtraAuthParams) + Send + Sync + 'static) -> Self {
         self.config.on_auth_url = Some(Box::new(f));
         self
     }
@@ -1403,8 +1519,8 @@ mod tests {
     )]
 
     use super::{
-        CliTokenClient, CliTokenClientBuilder, HasAuthUrl, HasClientId, HasTokenUrl, NoOidc,
-        parse_scopes,
+        AuthUrlParams, CliTokenClient, CliTokenClientBuilder, ExtraAuthParams, HasAuthUrl,
+        HasClientId, HasTokenUrl, NoOidc, parse_scopes,
     };
     use crate::jwks::{JwksValidationError, JwksValidator};
     use crate::oidc::Token;
@@ -1595,5 +1711,62 @@ mod tests {
             .client_id("test-client")
             .without_jwks_validation()
             .build();
+    }
+
+    // ── ExtraAuthParams ───────────────────────────────────────────────────────
+
+    #[test]
+    fn extra_auth_params_append_accumulates_pairs() {
+        let mut params = ExtraAuthParams::new();
+        params.append("access_type", "offline");
+        params.append("prompt", "consent");
+        assert_eq!(params.pairs.len(), 2);
+        assert_eq!(
+            params.pairs[0],
+            ("access_type".to_string(), "offline".to_string())
+        );
+        assert_eq!(
+            params.pairs[1],
+            ("prompt".to_string(), "consent".to_string())
+        );
+    }
+
+    #[test]
+    fn extra_auth_params_apply_to_adds_non_reserved_keys() {
+        let mut params = ExtraAuthParams::new();
+        params.append("access_type", "offline");
+        let mut url = url::Url::parse("https://example.com/auth").unwrap();
+        params.apply_to(&mut url);
+        let pairs: Vec<(_, _)> = url.query_pairs().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "access_type");
+        assert_eq!(pairs[0].1, "offline");
+    }
+
+    #[test]
+    fn extra_auth_params_apply_to_drops_reserved_keys() {
+        // Each reserved key should be filtered out; none should appear in the URL.
+        for reserved in AuthUrlParams::KEYS {
+            let mut params = ExtraAuthParams::new();
+            params.append(*reserved, "injected");
+            let mut url = url::Url::parse("https://example.com/auth").unwrap();
+            params.apply_to(&mut url);
+            assert!(
+                url.query_pairs().next().is_none(),
+                "reserved key '{reserved}' should have been dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn extra_auth_params_apply_to_passes_non_reserved_and_drops_reserved() {
+        let mut params = ExtraAuthParams::new();
+        params.append("state", "injected"); // reserved — dropped
+        params.append("access_type", "offline"); // not reserved — kept
+        let mut url = url::Url::parse("https://example.com/auth").unwrap();
+        params.apply_to(&mut url);
+        let pairs: Vec<(_, _)> = url.query_pairs().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "access_type");
     }
 }
