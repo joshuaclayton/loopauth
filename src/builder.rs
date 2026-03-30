@@ -21,8 +21,7 @@ use crate::pages::{
 };
 use crate::scope::{OAuth2Scope, RequestScope};
 use crate::server::{
-    CallbackResult, PortConfig, RenderedHtml, ServerState, bind_listener,
-    redirect_uri_from_listener, run_callback_server,
+    CallbackResult, HttpTransport, PortConfig, RenderedHtml, ServerState, Transport, bind_listener,
 };
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -91,8 +90,7 @@ impl AuthUrlParams<'_> {
 /// Google OAuth 2.0.
 ///
 /// The following keys are **reserved** and cannot be overridden via this
-/// interface — any attempt is silently dropped and a `tracing::warn!` is
-/// emitted:
+/// interface; any attempt is dropped and a `tracing::warn!` is emitted:
 /// `response_type`, `client_id`, `redirect_uri`, `state`,
 /// `code_challenge`, `code_challenge_method`, `nonce`, `scope`.
 ///
@@ -109,8 +107,9 @@ impl ExtraAuthParams {
 
     /// Append a query parameter to the authorization URL.
     ///
-    /// Parameters whose key matches a reserved name are silently dropped; see
-    /// the type-level documentation for the full list of reserved keys.
+    /// Parameters whose key matches a reserved name are dropped with a
+    /// `tracing::warn!`; see the type-level docs for the full list of reserved
+    /// keys.
     pub fn append(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
         self.pairs.push((key.into(), value.into()));
         self
@@ -155,6 +154,10 @@ const HTTP_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 /// [`CliTokenClient::run_authorization_flow`] to run the full flow. Use
 /// [`CliTokenClient::refresh`] or [`CliTokenClient::refresh_if_expiring`] to
 /// renew tokens without re-running the authorization flow.
+///
+/// The callback server runs over plain HTTP by default. For providers that
+/// require HTTPS redirect URIs, use
+/// [`CliTokenClientBuilder::use_https_with`] with a [`crate::TlsCertificate`].
 pub struct CliTokenClient {
     client_id: ClientId,
     client_secret: Option<String>,
@@ -174,6 +177,7 @@ pub struct CliTokenClient {
     on_server_ready: Option<OnServerReadyCallback>,
     oidc_jwks: Option<OidcJwksConfig>,
     http_client: reqwest::Client,
+    transport: Arc<dyn Transport>,
 }
 
 impl CliTokenClient {
@@ -187,9 +191,9 @@ impl CliTokenClient {
     ///
     /// # Errors
     ///
-    /// Returns `AuthError::ServerBind` if the loopback server cannot bind.
+    /// Returns `AuthError::ServerBind` if the loopback server cannot bind (including TLS setup failures in HTTPS mode).
     /// Returns `AuthError::Browser` if `open_browser` is true and the browser fails to open.
-    /// Returns `AuthError::Timeout` if the callback is not received within the configured timeout.
+    /// Returns `AuthError::Timeout` if the callback is not received within the configured timeout (default: 5 minutes).
     /// Returns `AuthError::Callback(CallbackError::StateMismatch)` if the callback state parameter does not match.
     /// Returns `AuthError::Callback(CallbackError::ProviderError)` if the callback contains an `error` parameter.
     /// Returns `AuthError::TokenExchange` if the token endpoint returns non-2xx.
@@ -236,7 +240,9 @@ impl CliTokenClient {
             .map_err(AuthError::ServerBind)?;
 
         // 2. Build redirect URI from listener
-        let redirect_uri_url = redirect_uri_from_listener(&listener)
+        let redirect_uri_url = self
+            .transport
+            .redirect_uri(&listener)
             .map_err(AuthError::ServerBind)
             .and_then(|redirect_uri| {
                 url::Url::parse(&redirect_uri).map_err(AuthError::InvalidUrl)
@@ -288,7 +294,12 @@ impl CliTokenClient {
         // 10. Spawn callback server
         let port = listener.local_addr().map_err(AuthError::ServerBind)?.port();
         let shutdown_arc = Arc::clone(&server_state.shutdown_tx);
-        tokio::spawn(run_callback_server(listener, server_state, shutdown_rx));
+        let transport = Arc::clone(&self.transport);
+        tokio::spawn(async move {
+            transport
+                .run_server(listener, server_state, shutdown_rx)
+                .await
+        });
 
         // 11. Call on_server_ready hook
         if let Some(ref hook) = self.on_server_ready {
@@ -888,6 +899,48 @@ async fn exchange_refresh_token(
 // of signature verification is always an explicit, visible choice rather than a silent
 // default.
 
+/// Type-state: loopback server uses plain HTTP (default).
+#[non_exhaustive]
+pub struct Http;
+
+/// Type-state: loopback server uses HTTPS.
+///
+/// Created by [`CliTokenClientBuilder::use_https`] (self-signed) or
+/// [`CliTokenClientBuilder::use_https_with`] (user-provided certificate).
+pub struct Https(Option<crate::tls::TlsCertificate>);
+
+/// Converts a scheme type-state marker into a transport implementation.
+///
+/// Keeps `build()` generic over `S` while ensuring the transport is fully
+/// determined by the type.
+pub trait IntoTransport: sealed::Sealed {
+    /// Create the transport implementation for this scheme.
+    fn into_transport(self) -> Arc<dyn Transport>;
+}
+
+impl sealed::Sealed for Http {}
+impl IntoTransport for Http {
+    fn into_transport(self) -> Arc<dyn Transport> {
+        Arc::new(HttpTransport)
+    }
+}
+
+impl sealed::Sealed for Https {}
+impl IntoTransport for Https {
+    fn into_transport(self) -> Arc<dyn Transport> {
+        match self.0 {
+            Some(cert) => Arc::new(crate::server::HttpsCustomTransport {
+                acceptor: cert.acceptor,
+            }),
+            None => Arc::new(crate::server::HttpsSelfSignedTransport),
+        }
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// Type-state: `client_id` not yet provided.
 #[non_exhaustive]
 pub struct NoClientId;
@@ -987,6 +1040,7 @@ impl Default for BuilderConfig {
 /// | `client_secret` | `None` (public client - PKCE only) |
 /// | `scopes` | empty (plus `openid` when OIDC mode is engaged) |
 /// | `port` | OS assigns port (use `port_hint` for soft preference, `require_port` for hard requirement) |
+/// | `transport` | HTTP (use [`use_https_with`](CliTokenClientBuilder::use_https_with) for trusted HTTPS, or [`use_https`](CliTokenClientBuilder::use_https) for self-signed) |
 /// | `open_browser` | `true` |
 /// | `timeout` | 5 minutes |
 ///
@@ -1023,11 +1077,18 @@ impl Default for BuilderConfig {
 /// # Ok(())
 /// # }
 /// ```
-pub struct CliTokenClientBuilder<C = NoClientId, A = NoAuthUrl, T = NoTokenUrl, O = NoOidc> {
+pub struct CliTokenClientBuilder<
+    C = NoClientId,
+    A = NoAuthUrl,
+    T = NoTokenUrl,
+    O = NoOidc,
+    S = Http,
+> {
     client_id: C,
     auth_url: A,
     token_url: T,
     oidc: O,
+    scheme: S,
     config: BuilderConfig,
 }
 
@@ -1038,6 +1099,7 @@ impl Default for CliTokenClientBuilder {
             auth_url: NoAuthUrl,
             token_url: NoTokenUrl,
             oidc: NoOidc,
+            scheme: Http,
             config: BuilderConfig::default(),
         }
     }
@@ -1060,12 +1122,13 @@ impl CliTokenClientBuilder {
     #[must_use]
     pub fn from_open_id_configuration(
         open_id_configuration: &OpenIdConfiguration,
-    ) -> CliTokenClientBuilder<NoClientId, HasAuthUrl, HasTokenUrl, OidcPending> {
+    ) -> CliTokenClientBuilder<NoClientId, HasAuthUrl, HasTokenUrl, OidcPending, Http> {
         CliTokenClientBuilder {
             client_id: NoClientId,
             auth_url: HasAuthUrl(open_id_configuration.authorization_endpoint().clone()),
             token_url: HasTokenUrl(open_id_configuration.token_endpoint().clone()),
             oidc: OidcPending,
+            scheme: Http,
             config: BuilderConfig {
                 issuer: Some(open_id_configuration.issuer().clone()),
                 scopes: std::collections::BTreeSet::from([OAuth2Scope::OpenId]),
@@ -1077,39 +1140,42 @@ impl CliTokenClientBuilder {
 
 // ── Setters available in any state ───────────────────────────────────────────
 
-impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
+impl<C, A, T, O, S> CliTokenClientBuilder<C, A, T, O, S> {
     /// Set the OAuth 2.0 client ID. Required.
     #[must_use]
-    pub fn client_id(self, v: impl Into<String>) -> CliTokenClientBuilder<HasClientId, A, T, O> {
+    pub fn client_id(self, v: impl Into<String>) -> CliTokenClientBuilder<HasClientId, A, T, O, S> {
         CliTokenClientBuilder {
             client_id: HasClientId(ClientId(v.into())),
             auth_url: self.auth_url,
             token_url: self.token_url,
             oidc: self.oidc,
+            scheme: self.scheme,
             config: self.config,
         }
     }
 
     /// Set the authorization endpoint URL. Required.
     #[must_use]
-    pub fn auth_url(self, v: url::Url) -> CliTokenClientBuilder<C, HasAuthUrl, T, O> {
+    pub fn auth_url(self, v: url::Url) -> CliTokenClientBuilder<C, HasAuthUrl, T, O, S> {
         CliTokenClientBuilder {
             client_id: self.client_id,
             auth_url: HasAuthUrl(v),
             token_url: self.token_url,
             oidc: self.oidc,
+            scheme: self.scheme,
             config: self.config,
         }
     }
 
     /// Set the token endpoint URL. Required.
     #[must_use]
-    pub fn token_url(self, v: url::Url) -> CliTokenClientBuilder<C, A, HasTokenUrl, O> {
+    pub fn token_url(self, v: url::Url) -> CliTokenClientBuilder<C, A, HasTokenUrl, O, S> {
         CliTokenClientBuilder {
             client_id: self.client_id,
             auth_url: self.auth_url,
             token_url: HasTokenUrl(v),
             oidc: self.oidc,
+            scheme: self.scheme,
             config: self.config,
         }
     }
@@ -1235,7 +1301,7 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
     /// have already been set.  Parameters with reserved keys
     /// (`response_type`, `client_id`, `redirect_uri`, `state`,
     /// `code_challenge`, `code_challenge_method`, `nonce`, `scope`) are
-    /// silently dropped and a `tracing::warn!` is emitted; the library controls
+    /// dropped and a `tracing::warn!` is emitted; the library controls
     /// those values unconditionally.
     ///
     /// # Example
@@ -1275,11 +1341,78 @@ impl<C, A, T, O> CliTokenClientBuilder<C, A, T, O> {
         self.config.on_server_ready = Some(Box::new(f));
         self
     }
+
+    /// Serve the loopback callback over HTTPS with a self-signed certificate.
+    ///
+    /// A fresh ephemeral certificate valid for `localhost` and `127.0.0.1` is
+    /// generated each time
+    /// [`run_authorization_flow`](CliTokenClient::run_authorization_flow) runs.
+    ///
+    /// **Note:** browsers will display a certificate warning for the self-signed
+    /// certificate. Users must click through the warning for the callback to
+    /// complete. For a seamless experience, use
+    /// [`use_https_with`](CliTokenClientBuilder::use_https_with) with a
+    /// locally-trusted certificate from `mkcert`.
+    #[must_use]
+    pub fn use_https(self) -> CliTokenClientBuilder<C, A, T, O, Https> {
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            oidc: self.oidc,
+            scheme: Https(None),
+            config: self.config,
+        }
+    }
+
+    /// Serve the loopback callback over HTTPS with a trusted certificate.
+    ///
+    /// Use a [`TlsCertificate`](crate::TlsCertificate) created via
+    /// [`ensure_localhost`](crate::TlsCertificate::ensure_localhost)
+    /// (recommended) or
+    /// [`from_pem_files`](crate::TlsCertificate::from_pem_files). The
+    /// certificate is validated at construction time, so this method is
+    /// infallible.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use loopauth::{CliTokenClient, TlsCertificate};
+    /// use std::path::PathBuf;
+    ///
+    /// # fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Generates certs via mkcert on first run, loads existing on subsequent runs
+    /// let tls_dir = PathBuf::from("/home/user/.config/my-cli/tls");
+    /// let cert = TlsCertificate::ensure_localhost(&tls_dir)?;
+    ///
+    /// let client = CliTokenClient::builder()
+    ///     .client_id("my-client")
+    ///     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
+    ///     .token_url(url::Url::parse("https://provider.example.com/token")?)
+    ///     .use_https_with(cert)
+    ///     .build();
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn use_https_with(
+        self,
+        certificate: crate::tls::TlsCertificate,
+    ) -> CliTokenClientBuilder<C, A, T, O, Https> {
+        CliTokenClientBuilder {
+            client_id: self.client_id,
+            auth_url: self.auth_url,
+            token_url: self.token_url,
+            oidc: self.oidc,
+            scheme: Https(Some(certificate)),
+            config: self.config,
+        }
+    }
 }
 
 // ── OIDC mode transition ──────────────────────────────────────────────────────
 
-impl<C, A, T> CliTokenClientBuilder<C, A, T, NoOidc> {
+impl<C, A, T, S> CliTokenClientBuilder<C, A, T, NoOidc, S> {
     /// Add `openid` to the requested scopes and enter OIDC mode.
     ///
     /// Transitions to [`OidcPending`] — you must then call either
@@ -1295,13 +1428,14 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, NoOidc> {
     /// [`build`]: CliTokenClientBuilder::build
     /// [`from_open_id_configuration`]: CliTokenClientBuilder::from_open_id_configuration
     #[must_use]
-    pub fn with_openid_scope(mut self) -> CliTokenClientBuilder<C, A, T, OidcPending> {
+    pub fn with_openid_scope(mut self) -> CliTokenClientBuilder<C, A, T, OidcPending, S> {
         self.config.scopes.insert(OAuth2Scope::OpenId);
         CliTokenClientBuilder {
             client_id: self.client_id,
             auth_url: self.auth_url,
             token_url: self.token_url,
             oidc: OidcPending,
+            scheme: self.scheme,
             config: self.config,
         }
     }
@@ -1309,7 +1443,7 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, NoOidc> {
 
 // ── OIDC pending → resolved ───────────────────────────────────────────────────
 
-impl<C, A, T> CliTokenClientBuilder<C, A, T, OidcPending> {
+impl<C, A, T, S> CliTokenClientBuilder<C, A, T, OidcPending, S> {
     /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
     ///
     /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
@@ -1333,12 +1467,13 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, OidcPending> {
     pub fn jwks_validator(
         self,
         v: Box<dyn JwksValidator>,
-    ) -> CliTokenClientBuilder<C, A, T, JwksEnabled> {
+    ) -> CliTokenClientBuilder<C, A, T, JwksEnabled, S> {
         CliTokenClientBuilder {
             client_id: self.client_id,
             auth_url: self.auth_url,
             token_url: self.token_url,
             oidc: JwksEnabled(v),
+            scheme: self.scheme,
             config: self.config,
         }
     }
@@ -1358,18 +1493,19 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, OidcPending> {
     ///
     /// [`jwks_validator`]: CliTokenClientBuilder::jwks_validator
     #[must_use]
-    pub fn without_jwks_validation(self) -> CliTokenClientBuilder<C, A, T, JwksDisabled> {
+    pub fn without_jwks_validation(self) -> CliTokenClientBuilder<C, A, T, JwksDisabled, S> {
         CliTokenClientBuilder {
             client_id: self.client_id,
             auth_url: self.auth_url,
             token_url: self.token_url,
             oidc: JwksDisabled,
+            scheme: self.scheme,
             config: self.config,
         }
     }
 }
 
-impl<A, T> CliTokenClientBuilder<HasClientId, A, T, OidcPending> {
+impl<A, T, S> CliTokenClientBuilder<HasClientId, A, T, OidcPending, S> {
     /// Configure JWKS validation from an [`OpenIdConfiguration`] and transition
     /// to [`JwksEnabled`].
     ///
@@ -1380,7 +1516,7 @@ impl<A, T> CliTokenClientBuilder<HasClientId, A, T, OidcPending> {
     pub fn with_open_id_configuration_jwks_validator(
         self,
         open_id_configuration: &OpenIdConfiguration,
-    ) -> CliTokenClientBuilder<HasClientId, A, T, JwksEnabled> {
+    ) -> CliTokenClientBuilder<HasClientId, A, T, JwksEnabled, S> {
         let client_id = self.client_id.0.as_str().to_owned();
         let validator = Box::new(RemoteJwksValidator::from_open_id_configuration(
             open_id_configuration,
@@ -1391,12 +1527,13 @@ impl<A, T> CliTokenClientBuilder<HasClientId, A, T, OidcPending> {
             auth_url: self.auth_url,
             token_url: self.token_url,
             oidc: JwksEnabled(validator),
+            scheme: self.scheme,
             config: self.config,
         }
     }
 }
 
-impl<C, A, T> CliTokenClientBuilder<C, A, T, JwksEnabled> {
+impl<C, A, T, S> CliTokenClientBuilder<C, A, T, JwksEnabled, S> {
     /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
     ///
     /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
@@ -1409,7 +1546,7 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, JwksEnabled> {
     }
 }
 
-impl<C, A, T> CliTokenClientBuilder<C, A, T, JwksDisabled> {
+impl<C, A, T, S> CliTokenClientBuilder<C, A, T, JwksDisabled, S> {
     /// Set the expected issuer URL for ID token `iss` claim validation (RFC 7519 §4.1.1).
     ///
     /// When set, the `iss` claim in every returned `id_token` must exactly match this URL.
@@ -1422,7 +1559,7 @@ impl<C, A, T> CliTokenClientBuilder<C, A, T, JwksDisabled> {
     }
 }
 
-impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksEnabled> {
+impl<S: IntoTransport> CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksEnabled, S> {
     /// Build a [`CliTokenClient`] from the configured builder.
     ///
     /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
@@ -1437,11 +1574,14 @@ impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksEnabled> {
             self.token_url.0,
             self.config,
             Some(OidcJwksConfig::Enabled(self.oidc.0)),
+            self.scheme.into_transport(),
         )
     }
 }
 
-impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksDisabled> {
+impl<S: IntoTransport>
+    CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksDisabled, S>
+{
     /// Build a [`CliTokenClient`] from the configured builder.
     ///
     /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
@@ -1456,12 +1596,19 @@ impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, JwksDisabled> {
             self.token_url.0,
             self.config,
             Some(OidcJwksConfig::Disabled),
+            self.scheme.into_transport(),
         )
     }
 }
 
-impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, NoOidc> {
-    /// Build a [`CliTokenClient`] from the configured builder.
+impl<S: IntoTransport> CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, NoOidc, S> {
+    /// Build a [`CliTokenClient`] without OIDC mode.
+    ///
+    /// No `openid` scope is added, no `id_token` is expected or validated,
+    /// and no nonce is generated. Use this path for pure OAuth 2.0
+    /// access-token-only flows. To enable OIDC, call
+    /// [`with_openid_scope`](CliTokenClientBuilder::with_openid_scope) before
+    /// building.
     ///
     /// All required fields (`client_id`, `auth_url`, `token_url`) are enforced
     /// at compile time. This method is infallible.
@@ -1473,6 +1620,7 @@ impl CliTokenClientBuilder<HasClientId, HasAuthUrl, HasTokenUrl, NoOidc> {
             self.token_url.0,
             self.config,
             None,
+            self.scheme.into_transport(),
         )
     }
 }
@@ -1483,6 +1631,7 @@ fn build_client(
     token_url: url::Url,
     config: BuilderConfig,
     oidc_jwks: Option<OidcJwksConfig>,
+    transport: Arc<dyn Transport>,
 ) -> CliTokenClient {
     CliTokenClient {
         client_id,
@@ -1507,6 +1656,7 @@ fn build_client(
             .timeout(std::time::Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECONDS))
             .build()
             .unwrap_or_default(),
+        transport,
     }
 }
 
