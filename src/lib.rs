@@ -6,9 +6,15 @@
 //! [RFC 7636]: https://datatracker.ietf.org/doc/html/rfc7636
 //!
 //! Given a `client_id`, `auth_url`, and `token_url`, [`CliTokenClient`] opens the
-//! user's browser to the authorization URL, spins up a short-lived loopback HTTP
+//! user's browser to the authorization URL, spins up a short-lived loopback
 //! server to receive the redirect callback, exchanges the authorization code for
 //! tokens, and returns a [`TokenSet`] to the caller.
+//!
+//! The callback server runs over plain HTTP by default. For providers that
+//! require HTTPS redirect URIs (e.g. Slack), call
+//! [`.use_https_with()`](CliTokenClientBuilder::use_https_with) with a
+//! [`TlsCertificate`] to serve over TLS instead. See the
+//! [HTTPS callbacks](#https-callbacks) section below.
 //!
 //! Token storage and downstream identity consumption are intentionally out of
 //! scope; use the [`TokenStore`] trait to provide your own persistence.
@@ -63,6 +69,38 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # HTTPS callbacks
+//!
+//! Some providers require `https://` redirect URIs, even for localhost.
+//! [`TlsCertificate::ensure_localhost`] handles certificate generation via
+//! [`mkcert`](https://github.com/FiloSottile/mkcert) automatically:
+//!
+//! ```no_run
+//! use loopauth::{CliTokenClient, TlsCertificate};
+//! use std::path::PathBuf;
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! // First run: generates certs via mkcert. Later runs: loads existing.
+//! let tls_dir = PathBuf::from("/home/user/.config/my-cli/tls");
+//! let cert = TlsCertificate::ensure_localhost(&tls_dir)?;
+//!
+//! let client = CliTokenClient::builder()
+//!     .client_id("my-client-id")
+//!     .auth_url(url::Url::parse("https://provider.example.com/authorize")?)
+//!     .token_url(url::Url::parse("https://provider.example.com/token")?)
+//!     .use_https_with(cert)
+//!     .build();
+//!
+//! // let tokens = client.run_authorization_flow().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! End users need `mkcert` installed and its CA trusted (`mkcert -install`,
+//! one-time). See [`TlsCertificate::SETUP_GUIDE_MANAGED`] for end-user
+//! instructions tailored to this workflow, or [`TlsCertificate::SETUP_GUIDE`]
+//! for the full manual guide.
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -75,6 +113,7 @@ mod pkce;
 mod scope;
 mod server;
 mod store;
+mod tls;
 mod token;
 
 #[cfg(any(test, doctest, feature = "testing"))]
@@ -90,6 +129,7 @@ pub use jwks::{JwksValidationError, JwksValidator, RemoteJwksValidator};
 pub use pages::{ErrorPageContext, ErrorPageRenderer, PageContext, SuccessPageRenderer};
 pub use scope::{OAuth2Scope, RequestScope};
 pub use store::TokenStore;
+pub use tls::{TlsCertificate, TlsCertificateError};
 pub use token::{
     AccessToken, RefreshOutcome, RefreshToken, TokenSet, Unvalidated, Validated, ValidationState,
 };

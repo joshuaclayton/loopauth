@@ -1,3 +1,104 @@
+/// Abstracts over HTTP and HTTPS server transports (internal).
+///
+/// Implementations handle redirect URI construction and server lifecycle.
+/// `CliTokenClient` stores an `Arc<dyn Transport>` selected at build time
+/// by the builder's type-state, avoiding conditional branching in the
+/// authorization flow.
+///
+/// End users do not interact with this trait directly. Use
+/// [`CliTokenClientBuilder::use_https`](crate::CliTokenClientBuilder::use_https) or
+/// [`CliTokenClientBuilder::use_https_with`](crate::CliTokenClientBuilder::use_https_with)
+/// to select the transport.
+#[async_trait::async_trait]
+pub trait Transport: Send + Sync {
+    /// Build the redirect URI (including scheme) from the bound listener.
+    fn redirect_uri(&self, listener: &tokio::net::TcpListener) -> std::io::Result<String>;
+
+    /// Run the callback server until `shutdown_rx` fires.
+    async fn run_server(
+        &self,
+        listener: tokio::net::TcpListener,
+        state: ServerState,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> std::io::Result<()>;
+}
+
+/// Plain HTTP transport for the loopback callback server.
+pub struct HttpTransport;
+
+#[async_trait::async_trait]
+impl Transport for HttpTransport {
+    fn redirect_uri(&self, listener: &tokio::net::TcpListener) -> std::io::Result<String> {
+        let port = listener.local_addr()?.port();
+        Ok(format!("http://127.0.0.1:{port}/callback"))
+    }
+
+    async fn run_server(
+        &self,
+        listener: tokio::net::TcpListener,
+        state: ServerState,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> std::io::Result<()> {
+        run_callback_server(listener, state, shutdown_rx).await
+    }
+}
+
+/// HTTPS transport using a self-signed certificate.
+///
+/// Generates a fresh ephemeral certificate for `localhost` / `127.0.0.1` at
+/// server start time.
+pub struct HttpsSelfSignedTransport;
+
+#[async_trait::async_trait]
+impl Transport for HttpsSelfSignedTransport {
+    fn redirect_uri(&self, listener: &tokio::net::TcpListener) -> std::io::Result<String> {
+        let port = listener.local_addr()?.port();
+        Ok(format!("https://127.0.0.1:{port}/callback"))
+    }
+
+    async fn run_server(
+        &self,
+        listener: tokio::net::TcpListener,
+        state: ServerState,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> std::io::Result<()> {
+        // Use Error::new (not Error::other) to preserve the typed SelfSignedCertError
+        // as a source() for the error chain.
+        #[expect(
+            clippy::io_other_error,
+            reason = "preserves typed source error via Error::new"
+        )]
+        let acceptor = crate::tls::self_signed_localhost_acceptor()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        run_callback_server_tls(listener, acceptor, state, shutdown_rx).await
+    }
+}
+
+/// HTTPS transport using a user-provided [`TlsCertificate`](crate::TlsCertificate).
+///
+/// The `TlsAcceptor` was validated and built at [`TlsCertificate`](crate::TlsCertificate)
+/// construction time, so no further validation occurs here.
+pub struct HttpsCustomTransport {
+    pub(crate) acceptor: tokio_rustls::TlsAcceptor,
+}
+
+#[async_trait::async_trait]
+impl Transport for HttpsCustomTransport {
+    fn redirect_uri(&self, listener: &tokio::net::TcpListener) -> std::io::Result<String> {
+        let port = listener.local_addr()?.port();
+        Ok(format!("https://127.0.0.1:{port}/callback"))
+    }
+
+    async fn run_server(
+        &self,
+        listener: tokio::net::TcpListener,
+        state: ServerState,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) -> std::io::Result<()> {
+        run_callback_server_tls(listener, self.acceptor.clone(), state, shutdown_rx).await
+    }
+}
+
 /// Rendered HTML page to be returned to the browser after the OAuth callback.
 #[derive(Debug)]
 pub struct RenderedHtml(pub(crate) String);
@@ -58,12 +159,7 @@ pub async fn bind_listener(port_config: PortConfig) -> std::io::Result<tokio::ne
     }
 }
 
-pub fn redirect_uri_from_listener(listener: &tokio::net::TcpListener) -> std::io::Result<String> {
-    let port = listener.local_addr()?.port();
-    Ok(format!("http://127.0.0.1:{port}/callback"))
-}
-
-pub async fn callback_handler(
+async fn callback_handler(
     axum::extract::State(state): axum::extract::State<ServerState>,
     axum::extract::Query(params): axum::extract::Query<CallbackParams>,
 ) -> (axum::http::StatusCode, axum::response::Html<String>) {
@@ -105,7 +201,7 @@ pub async fn callback_handler(
     (axum::http::StatusCode::OK, axum::response::Html(html))
 }
 
-pub async fn run_callback_server(
+async fn run_callback_server(
     listener: tokio::net::TcpListener,
     state: ServerState,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
@@ -122,6 +218,69 @@ pub async fn run_callback_server(
         .await
 }
 
+/// A TLS-wrapping listener that implements [`axum::serve::Listener`].
+///
+/// Accepts TCP connections from the inner listener and performs a TLS handshake
+/// before handing the stream to axum.
+struct TlsListener {
+    inner: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+}
+
+impl TlsListener {
+    const fn new(listener: tokio::net::TcpListener, acceptor: tokio_rustls::TlsAcceptor) -> Self {
+        Self {
+            inner: listener,
+            acceptor,
+        }
+    }
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.inner.accept().await {
+                Ok((stream, addr)) => match self.acceptor.accept(stream).await {
+                    Ok(tls_stream) => return (tls_stream, addr),
+                    Err(e) => {
+                        tracing::debug!("TLS handshake failed: {e}");
+                    }
+                },
+                Err(e) => {
+                    tracing::debug!("TCP accept failed: {e}");
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+async fn run_callback_server_tls(
+    listener: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    state: ServerState,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> std::io::Result<()> {
+    use axum::routing::get;
+    let app = axum::Router::new()
+        .route("/callback", get(callback_handler))
+        .with_state(state);
+
+    let tls_listener = TlsListener::new(listener, acceptor);
+
+    axum::serve(tls_listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -131,9 +290,20 @@ mod tests {
     )]
 
     use super::{
-        CallbackResult, PortConfig, RenderedHtml, ServerState, bind_listener,
-        redirect_uri_from_listener, run_callback_server,
+        CallbackResult, HttpTransport, PortConfig, RenderedHtml, ServerState, Transport,
+        bind_listener,
     };
+
+    /// Spawn an HTTP callback server via the Transport trait, matching how
+    /// `run_authorization_flow` uses it in production.
+    fn spawn_http_server(
+        listener: tokio::net::TcpListener,
+        state: ServerState,
+        shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let transport = HttpTransport;
+        tokio::spawn(async move { transport.run_server(listener, state, shutdown_rx).await });
+    }
 
     #[tokio::test]
     async fn bind_default_uses_loopback() {
@@ -203,7 +373,9 @@ mod tests {
         let listener = bind_listener(PortConfig::Random)
             .await
             .expect("bind should succeed");
-        let uri = redirect_uri_from_listener(&listener).expect("redirect_uri should work");
+        let uri = HttpTransport
+            .redirect_uri(&listener)
+            .expect("redirect_uri should work");
         assert!(uri.starts_with("http://127.0.0.1:"));
         assert!(uri.ends_with("/callback"));
     }
@@ -234,7 +406,7 @@ mod tests {
             .expect("bind should succeed");
         let port = listener.local_addr().expect("local_addr").port();
 
-        tokio::spawn(run_callback_server(listener, state, shutdown_rx));
+        spawn_http_server(listener, state, shutdown_rx);
 
         // Spawn a task to send HTML via inner_tx after a brief moment
         tokio::spawn(async move {
@@ -281,7 +453,7 @@ mod tests {
             .expect("bind should succeed");
         let port = listener.local_addr().expect("local_addr").port();
 
-        tokio::spawn(run_callback_server(listener, state, shutdown_rx));
+        spawn_http_server(listener, state, shutdown_rx);
 
         // Spawn inner_tx sender so handler doesn't block forever
         tokio::spawn(async move {
@@ -325,7 +497,7 @@ mod tests {
             .expect("bind should succeed");
         let port = listener.local_addr().expect("local_addr").port();
 
-        tokio::spawn(run_callback_server(listener, state, shutdown_rx));
+        spawn_http_server(listener, state, shutdown_rx);
 
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
