@@ -1,6 +1,7 @@
 //! Test support utilities for doctests and unit tests.
 #![expect(
     clippy::pedantic,
+    clippy::unwrap_used,
     reason = "test support code does not need to meet production lint standards"
 )]
 

@@ -116,6 +116,10 @@ impl<'de> Deserialize<'de> for Email {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tests do not need to meet production lint standards"
+    )]
     use super::Email;
 
     #[test]

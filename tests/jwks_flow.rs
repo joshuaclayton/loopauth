@@ -1,6 +1,7 @@
 #![expect(
     clippy::panic,
     clippy::expect_used,
+    clippy::unwrap_used,
     reason = "tests do not need to meet production lint standards"
 )]
 use async_trait::async_trait;

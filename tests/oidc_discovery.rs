@@ -1,5 +1,6 @@
 #![expect(
     clippy::panic,
+    clippy::unwrap_used,
     reason = "tests do not need to meet production lint standards"
 )]
 use axum::{Json, Router, routing::get};

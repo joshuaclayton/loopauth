@@ -98,6 +98,10 @@ impl<'de> Deserialize<'de> for Issuer {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tests do not need to meet production lint standards"
+    )]
     use super::Issuer;
     use url::Url;
 
