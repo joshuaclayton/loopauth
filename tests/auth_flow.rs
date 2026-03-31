@@ -2,6 +2,7 @@
     clippy::panic,
     clippy::indexing_slicing,
     clippy::expect_used,
+    clippy::unwrap_used,
     reason = "tests do not need to meet production lint standards"
 )]
 use loopauth::{

@@ -1,6 +1,7 @@
 #![expect(
     clippy::string_slice,
     clippy::expect_used,
+    clippy::unwrap_used,
     reason = "CLI examples can be more lax"
 )]
 // # Usage

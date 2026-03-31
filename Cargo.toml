@@ -10,7 +10,7 @@ homepage = "https://github.com/joshuaclayton/loopauth"
 documentation = "https://docs.rs/loopauth"
 readme = "README.md"
 keywords = ["oauth2", "pkce", "cli", "authentication", "oidc"]
-categories = ["authentication", "web-programming"]
+categories = ["authentication", "command-line-interface"]
 
 [dependencies]
 async-trait = "0.1"
@@ -24,7 +24,7 @@ rsa = { version = "0.9", features = ["pem"] }
 rustls = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2.6.1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
@@ -50,6 +50,7 @@ exhaustive_structs = "deny"
 panic = "deny"
 panic_in_result_fn = "deny"
 unwrap_in_result = "deny"
+unwrap_used = "deny"
 get_unwrap = "deny"
 expect_used = "deny"
 todo = "deny"
@@ -64,11 +65,16 @@ exit = "deny"
 # Error handling discipline
 map_err_ignore = "deny"
 indexing_slicing = "deny"
-string_slice = "deny"     # can panic on non-ASCII boundaries
+string_slice = "deny"            # can panic on non-ASCII boundaries
+wildcard_enum_match_arm = "deny"
 # Meta: suppressions must explain themselves
 allow_attributes_without_reason = "deny"
 allow_attributes = "deny"
+# Public API documentation completeness
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
 # Style consistency worth enforcing
 partial_pub_fields = "deny"
 unseparated_literal_suffix = "deny"
 missing_assert_message = "deny"
+redundant_else = "deny"

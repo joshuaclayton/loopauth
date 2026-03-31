@@ -266,7 +266,11 @@ fn select_key_with_kid<'a>(keys: &'a [JwkKey], kid: &str) -> (Option<&'a JwkKey>
                 found = Some(key);
                 break;
             }
-            _ => {
+            JwkKey::RsaWithKid { .. }
+            | JwkKey::Rsa { .. }
+            | JwkKey::Ec { .. }
+            | JwkKey::EcWithKid { .. }
+            | JwkKey::Unsupported { .. } => {
                 skipped.push(jwk_key_description(key));
             }
         }
@@ -284,7 +288,9 @@ fn build_decoding_key_and_validation(
     alg: jsonwebtoken::Algorithm,
     client_id: &str,
 ) -> Result<(jsonwebtoken::DecodingKey, jsonwebtoken::Validation), JwksValidationError> {
-    use jsonwebtoken::Algorithm::{ES256, ES384, PS256, PS384, PS512, RS256, RS384, RS512};
+    use jsonwebtoken::Algorithm::{
+        ES256, ES384, EdDSA, HS256, HS384, HS512, PS256, PS384, PS512, RS256, RS384, RS512,
+    };
 
     let mut validation = jsonwebtoken::Validation::new(alg);
     validation.leeway = CLOCK_SKEW_LEEWAY_SECONDS;
@@ -305,7 +311,10 @@ fn build_decoding_key_and_validation(
             let expected_crv = match alg {
                 ES256 => "P-256",
                 ES384 => "P-384",
-                other => {
+                // The outer match arm constrains `alg` to ES256|ES384,
+                // so this branch is unreachable; kept as a defensive guard.
+                other @ (HS256 | HS384 | HS512 | RS256 | RS384 | RS512 | PS256 | PS384 | PS512
+                | EdDSA) => {
                     return Err(JwksValidationError::new(format!(
                         "unexpected EC algorithm: {other:?}"
                     )));
@@ -416,6 +425,10 @@ impl JwksValidator for RemoteJwksValidator {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tests do not need to meet production lint standards"
+    )]
     use super::{JwksValidationError, RemoteJwksValidator};
     use crate::oidc::OpenIdConfiguration;
     use url::Url;

@@ -296,25 +296,23 @@ impl ErrorPageRenderer for DefaultErrorPageRenderer {
     async fn render_error(&self, ctx: &ErrorPageContext<'_>) -> String {
         let mut content = String::new();
 
-        match ctx.error() {
-            crate::error::AuthError::Callback(crate::error::CallbackError::ProviderError {
-                error,
-                description,
-            }) => {
-                let _ = write!(
-                    content,
-                    "<p class=\"text-base text-red-700 dark:text-red-300\">{}</p><p class=\"mt-1 font-mono text-sm text-red-400 dark:text-red-100\">{}</p>",
-                    html_escape(description),
-                    html_escape(error)
-                );
-            }
-            other => {
-                let _ = write!(
-                    content,
-                    "<p class=\"text-base text-red-700 dark:text-red-300\">{}</p>",
-                    html_escape(&other.to_string())
-                );
-            }
+        if let crate::error::AuthError::Callback(crate::error::CallbackError::ProviderError {
+            error,
+            description,
+        }) = ctx.error()
+        {
+            let _ = write!(
+                content,
+                "<p class=\"text-base text-red-700 dark:text-red-300\">{}</p><p class=\"mt-1 font-mono text-sm text-red-400 dark:text-red-100\">{}</p>",
+                html_escape(description),
+                html_escape(error)
+            );
+        } else {
+            let _ = write!(
+                content,
+                "<p class=\"text-base text-red-700 dark:text-red-300\">{}</p>",
+                html_escape(&ctx.error().to_string())
+            );
         }
 
         if !ctx.scopes().is_empty() {
@@ -370,7 +368,7 @@ fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     #![expect(
-        clippy::panic,
+        clippy::unwrap_used,
         reason = "tests do not need to meet production lint standards"
     )]
     use super::{
@@ -451,10 +449,11 @@ mod tests {
             ctx.redirect_uri().as_str(),
             "http://127.0.0.1:8080/callback"
         );
-        match ctx.error() {
-            AuthError::Timeout => {}
-            other => panic!("expected Timeout, got {other:?}"),
-        }
+        assert!(
+            matches!(ctx.error(), AuthError::Timeout),
+            "expected Timeout, got {:?}",
+            ctx.error()
+        );
     }
 
     #[tokio::test]

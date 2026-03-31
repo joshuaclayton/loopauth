@@ -149,6 +149,10 @@ impl From<&str> for RequestScope {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unwrap_used,
+        reason = "tests do not need to meet production lint standards"
+    )]
     use super::{OAuth2Scope, RequestScope};
 
     #[test]
