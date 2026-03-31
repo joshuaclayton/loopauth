@@ -112,6 +112,11 @@ run-auth-example:
 run-auth-discovery-example:
   cargo run --example auth_discovery
 
+# Run auth example for Jira
+[group('integration-test')]
+run-auth-jira-example:
+  cargo run --example auth_jira
+
 [group('cargo')]
 verify-publish:
   cargo publish --dry-run --allow-dirty
