@@ -247,6 +247,34 @@ impl FakeOAuthServer {
         }
     }
 
+    /// Like `start_with_refresh`, but the /token endpoint omits `refresh_token` from
+    /// the response body — matching the behavior of providers like Google that keep the
+    /// original refresh token valid without echoing it back (RFC 6749 §6).
+    pub async fn start_with_refresh_token_omitted_from_response(
+        token_value: impl Into<String>,
+    ) -> Self {
+        let state = Arc::new((token_value.into(), DEFAULT_TOKEN_EXPIRY_SECS));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let state_clone = Arc::clone(&state);
+        let app = Router::new()
+            .route("/authorize", get(authorize_handler))
+            .route("/token", post(refresh_no_rt_handler))
+            .with_state(state_clone);
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        Self {
+            port,
+            access_token: state.0.clone(),
+            refresh_token: String::new(),
+            rsa_private_key: None,
+        }
+    }
+
     /// Like `start`, but the /token endpoint includes an `id_token` in the response.
     ///
     /// The `nonce` sent in the authorization request is captured and included in the
@@ -446,6 +474,31 @@ async fn refresh_token_handler(
         token_type: "Bearer".to_string(),
         expires_in: state.2,
         refresh_token: Some(state.1.clone()),
+        id_token: None,
+    }))
+}
+
+/// Like `refresh_token_handler` but omits `refresh_token` from the response,
+/// simulating providers (e.g. Google) that don't echo the refresh token back.
+async fn refresh_no_rt_handler(
+    State(state): State<Arc<(String, u64)>>,
+    Form(body): Form<HashMap<String, String>>,
+) -> Result<Json<FakeTokenResponse>, StatusCode> {
+    let grant_type = body.get("grant_type").map_or("", String::as_str);
+
+    match grant_type {
+        "refresh_token" => match body.get("refresh_token") {
+            Some(rt) if !rt.is_empty() => {}
+            _ => return Err(StatusCode::BAD_REQUEST),
+        },
+        _ => return Err(StatusCode::BAD_REQUEST),
+    }
+
+    Ok(Json(FakeTokenResponse {
+        access_token: state.0.clone(),
+        token_type: "Bearer".to_string(),
+        expires_in: state.1,
+        refresh_token: None,
         id_token: None,
     }))
 }
