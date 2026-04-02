@@ -865,9 +865,17 @@ async fn exchange_refresh_token(
         .as_deref()
         .map_or_else(|| scopes.to_vec(), parse_scopes);
 
+    // RFC 6749 §6: the server MAY issue a new refresh token, in which case
+    // the client MUST discard the old one and replace it with the new one.
+    // When the server omits refresh_token from the response, the original
+    // refresh token remains valid and must be preserved.
+    let resolved_refresh_token = token_response
+        .refresh_token
+        .or_else(|| Some(refresh_token.to_string()));
+
     Ok(crate::token::TokenSet::new(
         token_response.access_token,
-        token_response.refresh_token,
+        resolved_refresh_token,
         expires_at,
         token_response
             .token_type
