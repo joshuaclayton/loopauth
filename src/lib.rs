@@ -115,6 +115,7 @@ mod server;
 mod store;
 mod tls;
 mod token;
+mod token_response;
 
 #[cfg(any(test, doctest, feature = "testing"))]
 #[doc(hidden)]
@@ -133,3 +134,4 @@ pub use tls::{TlsCertificate, TlsCertificateError};
 pub use token::{
     AccessToken, RefreshOutcome, RefreshToken, TokenSet, Unvalidated, Validated, ValidationState,
 };
+pub use token_response::TokenResponseFields;

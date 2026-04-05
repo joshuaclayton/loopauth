@@ -30,6 +30,10 @@ pub enum AuthError {
     /// A network-level request error occurred.
     #[error("request failed: {0}")]
     Request(#[from] reqwest::Error),
+    /// The token endpoint returned a 2xx response whose body could not be
+    /// parsed into the expected token response structure.
+    #[error("failed to parse token response: {0}")]
+    TokenParse(String),
     /// An internal server or channel error occurred.
     #[error("server error: {0}")]
     Server(String),
@@ -80,6 +84,10 @@ pub enum RefreshError {
     /// A network-level request error occurred.
     #[error("request failed: {0}")]
     Request(#[from] reqwest::Error),
+    /// The token endpoint returned a 2xx response whose body could not be
+    /// parsed into the expected token response structure.
+    #[error("failed to parse token response: {0}")]
+    TokenParse(String),
     /// An error occurred while validating the `id_token`.
     #[error(transparent)]
     IdToken(#[from] IdTokenError),
@@ -169,6 +177,18 @@ mod tests {
             RefreshError::NoRefreshToken.to_string(),
             "no refresh token available"
         );
+    }
+
+    #[test]
+    fn auth_error_token_parse_contains_message() {
+        let err = AuthError::TokenParse("bad json".to_string());
+        assert!(err.to_string().contains("bad json"));
+    }
+
+    #[test]
+    fn refresh_error_token_parse_contains_message() {
+        let err = RefreshError::TokenParse("bad json".to_string());
+        assert!(err.to_string().contains("bad json"));
     }
 
     #[test]

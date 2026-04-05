@@ -1,6 +1,7 @@
 use crate::error::{AuthError, CallbackError, RefreshError};
 use crate::jwks::{JwksValidator, JwksValidatorStorage, RemoteJwksValidator};
 use crate::oidc::OpenIdConfiguration;
+use crate::token_response::{TokenParser, default_token_parser};
 
 /// Whether JWKS signature verification is performed on received ID tokens.
 ///
@@ -178,6 +179,7 @@ pub struct CliTokenClient {
     oidc_jwks: Option<OidcJwksConfig>,
     http_client: reqwest::Client,
     transport: Arc<dyn Transport>,
+    token_parser: TokenParser,
 }
 
 impl CliTokenClient {
@@ -371,6 +373,7 @@ impl CliTokenClient {
             &self.token_url,
             self.client_id.as_str(),
             self.client_secret.as_deref(),
+            &self.token_parser,
             refresh_token,
             &self.scopes,
         )
@@ -440,38 +443,6 @@ impl CliTokenClient {
         Ok(crate::token::RefreshOutcome::Refreshed(Box::new(
             new_tokens,
         )))
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<u64>,
-    token_type: Option<String>,
-    id_token: Option<String>,
-    scope: Option<String>,
-}
-
-struct TokenResponseFields {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<u64>,
-    token_type: Option<String>,
-    id_token: Option<String>,
-    scope: Option<String>,
-}
-
-impl TokenResponse {
-    fn into_fields(self) -> TokenResponseFields {
-        TokenResponseFields {
-            access_token: self.access_token,
-            refresh_token: self.refresh_token,
-            expires_in: self.expires_in,
-            token_type: self.token_type,
-            id_token: self.id_token,
-            scope: self.scope,
-        }
     }
 }
 
@@ -654,6 +625,7 @@ async fn handle_callback(
         &auth.token_url,
         auth.client_id.as_str(),
         auth.client_secret.as_deref(),
+        &auth.token_parser,
         &code,
         redirect_uri_url.as_str(),
         code_verifier,
@@ -768,6 +740,7 @@ async fn exchange_code(
     token_url: &url::Url,
     client_id: &str,
     client_secret: Option<&str>,
+    token_parser: &TokenParser,
     code: &str,
     redirect_uri: &str,
     code_verifier: &str,
@@ -800,16 +773,14 @@ async fn exchange_code(
     }
 
     let body = response.text().await?;
-    let token_response: TokenResponse =
-        serde_json::from_str(&body).map_err(|e| AuthError::Server(format!("{e}: {body}")))?;
-    let fields = token_response.into_fields();
+    let fields = token_parser(&body).map_err(|e| AuthError::TokenParse(format!("{e}: {body}")))?;
 
     let expires_at = fields
         .expires_in
-        .map(|secs| t0 + std::time::Duration::from_secs(secs));
+        .and_then(|secs| t0.checked_add(std::time::Duration::from_secs(secs)));
 
-    let oidc = parse_oidc_if_requested(fields.id_token.as_deref(), scopes)
-        .map_err(AuthError::IdToken)?;
+    let oidc =
+        parse_oidc_if_requested(fields.id_token.as_deref(), scopes).map_err(AuthError::IdToken)?;
 
     // RFC 6749 §5.1: if scope omitted, use requested scopes
     let resolved_scopes = fields
@@ -821,9 +792,7 @@ async fn exchange_code(
         fields.access_token,
         fields.refresh_token,
         expires_at,
-        fields
-            .token_type
-            .unwrap_or_else(|| "Bearer".to_string()),
+        fields.token_type.unwrap_or_else(|| "Bearer".to_string()),
         oidc,
         resolved_scopes,
     ))
@@ -834,6 +803,7 @@ async fn exchange_refresh_token(
     token_url: &url::Url,
     client_id: &str,
     client_secret: Option<&str>,
+    token_parser: &TokenParser,
     refresh_token: &str,
     scopes: &[crate::scope::OAuth2Scope],
 ) -> Result<crate::token::TokenSet<crate::token::Unvalidated>, RefreshError> {
@@ -873,12 +843,13 @@ async fn exchange_refresh_token(
         return Err(RefreshError::TokenExchange { status, body });
     }
 
-    let token_response: TokenResponse = response.json().await?;
-    let fields = token_response.into_fields();
+    let body = response.text().await?;
+    let fields =
+        token_parser(&body).map_err(|e| RefreshError::TokenParse(format!("{e}: {body}")))?;
 
     let expires_at = fields
         .expires_in
-        .map(|secs| t0 + std::time::Duration::from_secs(secs));
+        .and_then(|secs| t0.checked_add(std::time::Duration::from_secs(secs)));
 
     let oidc = parse_oidc_if_requested(fields.id_token.as_deref(), scopes)
         .map_err(RefreshError::IdToken)?;
@@ -901,9 +872,7 @@ async fn exchange_refresh_token(
         fields.access_token,
         resolved_refresh_token,
         expires_at,
-        fields
-            .token_type
-            .unwrap_or_else(|| "Bearer".to_string()),
+        fields.token_type.unwrap_or_else(|| "Bearer".to_string()),
         oidc,
         resolved_scopes,
     ))
@@ -1030,6 +999,7 @@ struct BuilderConfig {
     on_auth_url: Option<OnAuthUrlCallback>,
     on_url: Option<OnUrlCallback>,
     on_server_ready: Option<OnServerReadyCallback>,
+    token_parser: Option<TokenParser>,
 }
 
 impl Default for BuilderConfig {
@@ -1048,6 +1018,7 @@ impl Default for BuilderConfig {
             on_url: None,
             on_server_ready: None,
             issuer: None,
+            token_parser: None,
         }
     }
 }
@@ -1320,6 +1291,29 @@ impl<C, A, T, O, S> CliTokenClientBuilder<C, A, T, O, S> {
     #[must_use]
     pub const fn timeout(mut self, v: std::time::Duration) -> Self {
         self.config.timeout = v;
+        self
+    }
+
+    /// Use a custom token response type for non-standard providers.
+    ///
+    /// The type `R` must implement [`serde::Deserialize`] and
+    /// <code>Into<[TokenResponseFields](crate::TokenResponseFields)></code>. It will be deserialized from the
+    /// token endpoint's JSON response and converted into the standard fields.
+    /// This is useful for providers like Slack that nest tokens inside a
+    /// sub-object rather than placing them at the top level.
+    ///
+    /// When not called, the standard OAuth 2.0 flat response format is used.
+    ///
+    /// [`TokenResponseFields`]: crate::TokenResponseFields
+    #[must_use]
+    pub fn token_response_type<R>(mut self) -> Self
+    where
+        R: serde::de::DeserializeOwned
+            + Into<crate::token_response::TokenResponseFields>
+            + Send
+            + 'static,
+    {
+        self.config.token_parser = Some(crate::token_response::custom_token_parser::<R>());
         self
     }
 
@@ -1689,6 +1683,7 @@ fn build_client(
             .build()
             .unwrap_or_default(),
         transport,
+        token_parser: config.token_parser.unwrap_or_else(default_token_parser),
     }
 }
 

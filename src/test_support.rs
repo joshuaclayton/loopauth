@@ -560,3 +560,67 @@ async fn oidc_token_handler(
         id_token: Some(id_token),
     }))
 }
+
+/// A token response that nests the access token inside a sub-object,
+/// matching the pattern used by Slack OAuth v2 and similar providers.
+#[derive(Debug, Serialize)]
+struct NestedFakeTokenResponse {
+    ok: bool,
+    authed_user: NestedAuthedUser,
+}
+
+#[derive(Debug, Serialize)]
+struct NestedAuthedUser {
+    access_token: String,
+    token_type: String,
+    expires_in: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+}
+
+impl FakeOAuthServer {
+    /// Like `start`, but the /token endpoint returns a nested response where
+    /// `access_token` lives inside an `authed_user` sub-object (Slack v2 style).
+    pub async fn start_with_nested_response(token_value: impl Into<String>) -> Self {
+        let token = Arc::new(token_value.into());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let token_clone = Arc::clone(&token);
+        let app = Router::new()
+            .route("/authorize", get(authorize_handler))
+            .route("/token", post(nested_token_handler))
+            .with_state(token_clone);
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        Self {
+            port,
+            access_token: token.as_ref().clone(),
+            refresh_token: String::new(),
+            rsa_private_key: None,
+        }
+    }
+}
+
+async fn nested_token_handler(
+    State(token): State<Arc<String>>,
+    Form(body): Form<HashMap<String, String>>,
+) -> Result<Json<NestedFakeTokenResponse>, StatusCode> {
+    match body.get("code_verifier") {
+        Some(cv) if !cv.is_empty() => {}
+        _ => return Err(StatusCode::BAD_REQUEST),
+    }
+
+    Ok(Json(NestedFakeTokenResponse {
+        ok: true,
+        authed_user: NestedAuthedUser {
+            access_token: token.as_ref().clone(),
+            token_type: "Bearer".to_string(),
+            expires_in: DEFAULT_TOKEN_EXPIRY_SECS,
+            refresh_token: None,
+        },
+    }))
+}
