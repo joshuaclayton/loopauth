@@ -39,6 +39,8 @@ struct FakeTokenResponse {
     refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
 }
 
 /// Builder for [`FakeOAuthServer`] with opt-in discovery and JWKS capabilities.
@@ -448,6 +450,7 @@ async fn token_handler(
         expires_in: DEFAULT_TOKEN_EXPIRY_SECS,
         refresh_token: None,
         id_token: None,
+        scope: None,
     }))
 }
 
@@ -475,6 +478,7 @@ async fn refresh_token_handler(
         expires_in: state.2,
         refresh_token: Some(state.1.clone()),
         id_token: None,
+        scope: None,
     }))
 }
 
@@ -500,6 +504,7 @@ async fn refresh_no_rt_handler(
         expires_in: state.1,
         refresh_token: None,
         id_token: None,
+        scope: None,
     }))
 }
 
@@ -558,6 +563,7 @@ async fn oidc_token_handler(
         expires_in: DEFAULT_TOKEN_EXPIRY_SECS,
         refresh_token: None,
         id_token: Some(id_token),
+        scope: None,
     }))
 }
 
@@ -603,6 +609,57 @@ impl FakeOAuthServer {
             rsa_private_key: None,
         }
     }
+}
+
+impl FakeOAuthServer {
+    /// Like `start`, but the /token endpoint includes a `scope` field in the response.
+    ///
+    /// Useful for testing that loopauth uses the provider-granted scopes (from the
+    /// response) rather than the builder-configured scopes.
+    pub async fn start_with_scope(
+        token_value: impl Into<String>,
+        response_scope: impl Into<String>,
+    ) -> Self {
+        let state = Arc::new((token_value.into(), response_scope.into()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let state_clone = Arc::clone(&state);
+        let app = Router::new()
+            .route("/authorize", get(authorize_handler))
+            .route("/token", post(scoped_token_handler))
+            .with_state(state_clone);
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        Self {
+            port,
+            access_token: state.0.clone(),
+            refresh_token: String::new(),
+            rsa_private_key: None,
+        }
+    }
+}
+
+async fn scoped_token_handler(
+    State(state): State<Arc<(String, String)>>,
+    Form(body): Form<HashMap<String, String>>,
+) -> Result<Json<FakeTokenResponse>, StatusCode> {
+    match body.get("code_verifier") {
+        Some(cv) if !cv.is_empty() => {}
+        _ => return Err(StatusCode::BAD_REQUEST),
+    }
+
+    Ok(Json(FakeTokenResponse {
+        access_token: state.0.clone(),
+        token_type: "Bearer".to_string(),
+        expires_in: DEFAULT_TOKEN_EXPIRY_SECS,
+        refresh_token: None,
+        id_token: None,
+        scope: Some(state.1.clone()),
+    }))
 }
 
 async fn nested_token_handler(

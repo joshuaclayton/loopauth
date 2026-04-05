@@ -670,7 +670,7 @@ async fn handle_callback(
     // Send success HTML to callback handler (renderer > html string > default)
     let html = render_success_html(
         &token_set,
-        &auth.scopes,
+        token_set.scopes(),
         redirect_uri_url,
         auth.client_id.as_str(),
         auth.success_renderer.as_deref(),
