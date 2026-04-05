@@ -453,6 +453,28 @@ struct TokenResponse {
     scope: Option<String>,
 }
 
+struct TokenResponseFields {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<u64>,
+    token_type: Option<String>,
+    id_token: Option<String>,
+    scope: Option<String>,
+}
+
+impl TokenResponse {
+    fn into_fields(self) -> TokenResponseFields {
+        TokenResponseFields {
+            access_token: self.access_token,
+            refresh_token: self.refresh_token,
+            expires_in: self.expires_in,
+            token_type: self.token_type,
+            id_token: self.id_token,
+            scope: self.scope,
+        }
+    }
+}
+
 /// Parse an `id_token` JWT from a token response, if `openid` was in the requested scopes.
 ///
 /// Returns `Ok(None)` when `openid` was not requested or when the provider omitted `id_token`.
@@ -780,25 +802,26 @@ async fn exchange_code(
     let body = response.text().await?;
     let token_response: TokenResponse =
         serde_json::from_str(&body).map_err(|e| AuthError::Server(format!("{e}: {body}")))?;
+    let fields = token_response.into_fields();
 
-    let expires_at = token_response
+    let expires_at = fields
         .expires_in
         .map(|secs| t0 + std::time::Duration::from_secs(secs));
 
-    let oidc = parse_oidc_if_requested(token_response.id_token.as_deref(), scopes)
+    let oidc = parse_oidc_if_requested(fields.id_token.as_deref(), scopes)
         .map_err(AuthError::IdToken)?;
 
     // RFC 6749 §5.1: if scope omitted, use requested scopes
-    let resolved_scopes = token_response
+    let resolved_scopes = fields
         .scope
         .as_deref()
         .map_or_else(|| scopes.to_vec(), parse_scopes);
 
     Ok(crate::token::TokenSet::new(
-        token_response.access_token,
-        token_response.refresh_token,
+        fields.access_token,
+        fields.refresh_token,
         expires_at,
-        token_response
+        fields
             .token_type
             .unwrap_or_else(|| "Bearer".to_string()),
         oidc,
@@ -850,17 +873,18 @@ async fn exchange_refresh_token(
         return Err(RefreshError::TokenExchange { status, body });
     }
 
-    let token_response: TokenResponse = response.json().await?; // RefreshError::Request via #[from] reqwest::Error
+    let token_response: TokenResponse = response.json().await?;
+    let fields = token_response.into_fields();
 
-    let expires_at = token_response
+    let expires_at = fields
         .expires_in
         .map(|secs| t0 + std::time::Duration::from_secs(secs));
 
-    let oidc = parse_oidc_if_requested(token_response.id_token.as_deref(), scopes)
+    let oidc = parse_oidc_if_requested(fields.id_token.as_deref(), scopes)
         .map_err(RefreshError::IdToken)?;
 
     // RFC 6749 §5.1: if scope omitted, use requested scopes
-    let resolved_scopes = token_response
+    let resolved_scopes = fields
         .scope
         .as_deref()
         .map_or_else(|| scopes.to_vec(), parse_scopes);
@@ -869,15 +893,15 @@ async fn exchange_refresh_token(
     // the client MUST discard the old one and replace it with the new one.
     // When the server omits refresh_token from the response, the original
     // refresh token remains valid and must be preserved.
-    let resolved_refresh_token = token_response
+    let resolved_refresh_token = fields
         .refresh_token
         .or_else(|| Some(refresh_token.to_string()));
 
     Ok(crate::token::TokenSet::new(
-        token_response.access_token,
+        fields.access_token,
         resolved_refresh_token,
         expires_at,
-        token_response
+        fields
             .token_type
             .unwrap_or_else(|| "Bearer".to_string()),
         oidc,
