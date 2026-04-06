@@ -117,6 +117,11 @@ run-auth-discovery-example:
 run-auth-jira-example:
   cargo run --example auth_jira
 
+# Run auth example for Slack OAuth v2
+[group('integration-test')]
+run-auth-slack-example:
+  cargo run --example auth_slack
+
 [group('cargo')]
 verify-publish:
   cargo publish --dry-run --allow-dirty
