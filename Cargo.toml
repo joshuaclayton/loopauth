@@ -17,7 +17,6 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
-rand = "0.10"
 rcgen = "0.13"
 reqwest = { version = "0.13", features = ["json", "form"] }
 rsa = { version = "0.9", features = ["pem"] }
