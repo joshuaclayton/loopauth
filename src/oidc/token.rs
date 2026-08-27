@@ -318,7 +318,7 @@ mod tests {
     }
 
     fn token_with_nbf_offset(offset_secs: i64) -> Token {
-        let exp = SystemTime::now() + Duration::from_secs(3600);
+        let exp = SystemTime::now() + Duration::from_hours(1);
         let iat = SystemTime::now() - Duration::from_secs(10);
         let nbf = if offset_secs >= 0 {
             SystemTime::now() + Duration::from_secs(offset_secs.cast_unsigned())
@@ -385,7 +385,7 @@ mod tests {
     }
 
     fn token_with_iat_offset(offset_secs: i64) -> Token {
-        let exp = SystemTime::now() + Duration::from_secs(3600);
+        let exp = SystemTime::now() + Duration::from_hours(1);
         let iat = if offset_secs >= 0 {
             SystemTime::now() + Duration::from_secs(offset_secs.cast_unsigned())
         } else {
@@ -429,7 +429,7 @@ mod tests {
     }
 
     fn token_with_nonce(nonce: Option<String>) -> Token {
-        let exp = SystemTime::now() + Duration::from_secs(3600);
+        let exp = SystemTime::now() + Duration::from_hours(1);
         let iat = SystemTime::now() - Duration::from_secs(10);
         let iss = url::Url::parse("https://issuer.example.com").expect("valid url");
         let claims = Claims::new(

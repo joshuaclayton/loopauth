@@ -79,7 +79,7 @@ async fn refresh_if_expiring_preserves_token_when_provider_omits_it() {
     let expired_tokens = expired_tokens.into_validated();
 
     let outcome = client
-        .refresh_if_expiring(&expired_tokens, Duration::from_secs(300))
+        .refresh_if_expiring(&expired_tokens, Duration::from_mins(5))
         .await;
 
     match outcome {

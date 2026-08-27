@@ -192,7 +192,7 @@ impl Claims {
     /// considered valid.
     #[must_use]
     pub fn is_expired(&self) -> bool {
-        SystemTime::now() > self.exp + std::time::Duration::from_secs(60)
+        SystemTime::now() > self.exp + std::time::Duration::from_mins(1)
     }
 }
 

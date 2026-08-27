@@ -23,10 +23,7 @@ where
 {
     match time {
         Some(t) => {
-            let secs = t
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let secs = t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
             serializer.serialize_some(&secs)
         }
         None => serializer.serialize_none(),
@@ -292,31 +289,31 @@ mod tests {
 
     #[test]
     fn token_set_future_expiry_is_not_expired() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         assert!(!token.is_expired());
     }
 
     #[test]
     fn token_set_expiring_soon_is_within_threshold() {
         let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(30));
-        assert!(token.expires_within(Duration::from_secs(60)));
+        assert!(token.expires_within(Duration::from_mins(1)));
     }
 
     #[test]
     fn token_set_far_future_not_within_threshold() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
-        assert!(!token.expires_within(Duration::from_secs(60)));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
+        assert!(!token.expires_within(Duration::from_mins(1)));
     }
 
     #[test]
     fn token_set_already_expired_is_within_any_threshold() {
         let token = make_token_set_expiring_at(UNIX_EPOCH);
-        assert!(token.expires_within(Duration::from_secs(60)));
+        assert!(token.expires_within(Duration::from_mins(1)));
     }
 
     #[test]
     fn token_set_serde_roundtrip_access_token() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         let json = serde_json::to_string(&token).expect("serialize");
         let decoded: TokenSet<Unvalidated> = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded.access_token().as_str(), "access_token_value");
@@ -324,7 +321,7 @@ mod tests {
 
     #[test]
     fn token_set_expires_at_serializes_as_u64() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         let json = serde_json::to_string(&token).expect("serialize");
         let value: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert!(
@@ -356,14 +353,14 @@ mod tests {
 
     #[test]
     fn access_token_getter_returns_access_token_newtype() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         let at: &AccessToken = token.access_token();
         assert_eq!(at.as_str(), "access_token_value");
     }
 
     #[test]
     fn refresh_token_getter_returns_refresh_token_newtype() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         let rt: Option<&RefreshToken> = token.refresh_token();
         assert!(rt.is_some());
         assert_eq!(rt.unwrap().as_str(), "refresh_token_value");
@@ -374,7 +371,7 @@ mod tests {
         let token = TokenSet::new(
             "access".to_string(),
             None,
-            Some(SystemTime::now() + Duration::from_secs(3600)),
+            Some(SystemTime::now() + Duration::from_hours(1)),
             "Bearer".to_string(),
             None,
             Vec::new(),
@@ -385,7 +382,7 @@ mod tests {
 
     #[test]
     fn id_token_raw_absent_returns_none() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         assert!(token.id_token_raw().is_none());
     }
 
@@ -406,7 +403,7 @@ mod tests {
         let token = TokenSet::new(
             "access".to_string(),
             None,
-            Some(SystemTime::now() + Duration::from_secs(3600)),
+            Some(SystemTime::now() + Duration::from_hours(1)),
             "Bearer".to_string(),
             Some(oidc),
             Vec::new(),
@@ -417,7 +414,7 @@ mod tests {
 
     #[test]
     fn expires_at_is_publicly_callable() {
-        let expiry = SystemTime::now() + Duration::from_secs(3600);
+        let expiry = SystemTime::now() + Duration::from_hours(1);
         let token = make_token_set_expiring_at(expiry);
         // expires_at() must be pub - compile-time check
         let _ = token.expires_at();
@@ -425,7 +422,7 @@ mod tests {
 
     #[test]
     fn scopes_returns_empty_slice_when_empty() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         assert_eq!(token.scopes(), &[] as &[OAuth2Scope]);
     }
 
@@ -434,7 +431,7 @@ mod tests {
         let token = TokenSet::new(
             "access".to_string(),
             None,
-            Some(SystemTime::now() + Duration::from_secs(3600)),
+            Some(SystemTime::now() + Duration::from_hours(1)),
             "Bearer".to_string(),
             None,
             vec![OAuth2Scope::OpenId, OAuth2Scope::Email],
@@ -455,7 +452,7 @@ mod tests {
 
     #[test]
     fn token_set_token_type_returns_bearer() {
-        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_secs(3600));
+        let token = make_token_set_expiring_at(SystemTime::now() + Duration::from_hours(1));
         assert_eq!(token.token_type(), "Bearer");
     }
 }

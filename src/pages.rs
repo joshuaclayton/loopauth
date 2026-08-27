@@ -386,7 +386,7 @@ mod tests {
     }
 
     fn future_expiry() -> SystemTime {
-        SystemTime::now() + Duration::from_secs(3600)
+        SystemTime::now() + Duration::from_hours(1)
     }
 
     #[test]
