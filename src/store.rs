@@ -103,7 +103,7 @@ mod tests {
         TokenSet::new(
             "access".to_string(),
             None,
-            Some(SystemTime::now() + Duration::from_secs(3600)),
+            Some(SystemTime::now() + Duration::from_hours(1)),
             "Bearer".to_string(),
             None,
             Vec::new(),

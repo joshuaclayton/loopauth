@@ -69,7 +69,7 @@ async fn refresh_if_expiring_not_needed() {
 
     // Token has ~3600s expiry; 60s threshold means it is NOT expiring soon
     let result = auth
-        .refresh_if_expiring(&token_set, Duration::from_secs(60))
+        .refresh_if_expiring(&token_set, Duration::from_mins(1))
         .await;
 
     match result {
@@ -91,7 +91,7 @@ async fn refresh_if_expiring_refreshed() {
 
     // Token has ~3600s expiry; 7200s threshold means it IS expiring soon
     let result = auth
-        .refresh_if_expiring(&token_set, Duration::from_secs(7200))
+        .refresh_if_expiring(&token_set, Duration::from_hours(2))
         .await;
 
     match result {

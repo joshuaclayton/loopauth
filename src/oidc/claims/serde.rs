@@ -25,13 +25,11 @@ impl Serialize for Claims {
         let iat_secs = self
             .iat
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         let exp_secs = self
             .exp
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         s.serialize_field("iat", &iat_secs)?;
         s.serialize_field("exp", &exp_secs)?;
         s.end()
